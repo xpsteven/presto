@@ -20,6 +20,7 @@ import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.common.type.NamedTypeSignature;
 import com.facebook.presto.common.type.RowFieldName;
 import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.TimestampType;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.common.type.TypeSignature;
@@ -46,6 +47,7 @@ import com.mongodb.client.result.DeleteResult;
 import io.airlift.slice.Slice;
 import org.bson.Document;
 import org.bson.types.ObjectId;
+// import org.bson.types.BSONTimestamp;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -249,7 +251,7 @@ public class MongoSession
                 query.putAll(buildPredicate(column, entry.getValue()));
             }
         }
-
+        // log.debug("buildQuery result is %s", query.toJson());
         return query;
     }
 
@@ -257,6 +259,7 @@ public class MongoSession
     {
         String name = column.getName();
         Type type = column.getType();
+        log.debug("buildPredicate name=%s type=%s", name, type.toString());
         if (domain.getValues().isNone() && domain.isNullAllowed()) {
             return documentOf(name, isNullPredicate());
         }
@@ -325,6 +328,8 @@ public class MongoSession
 
     private static Object translateValue(Object source, Type type)
     {
+        log.debug("translateValue source=%s type=%s", source.toString(), type.toString());
+
         if (source instanceof Slice) {
             if (type instanceof ObjectIdType) {
                 return new ObjectId(((Slice) source).getBytes());
@@ -332,6 +337,9 @@ public class MongoSession
             else {
                 return ((Slice) source).toStringUtf8();
             }
+        }
+        if (type instanceof TimestampType && source instanceof Long) {
+            return new Date(((Long) source).longValue());
         }
 
         return source;
