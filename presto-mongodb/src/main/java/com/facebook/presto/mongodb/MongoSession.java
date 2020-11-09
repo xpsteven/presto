@@ -20,6 +20,7 @@ import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.common.type.NamedTypeSignature;
 import com.facebook.presto.common.type.RowFieldName;
 import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.TimestampType;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.common.type.TypeSignature;
@@ -332,6 +333,9 @@ public class MongoSession
             else {
                 return ((Slice) source).toStringUtf8();
             }
+        }
+        if (type instanceof TimestampType && source instanceof Long) {
+            return new Date(((Long) source).longValue());
         }
 
         return source;
