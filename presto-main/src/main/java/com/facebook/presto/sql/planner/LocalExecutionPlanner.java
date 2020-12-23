@@ -18,10 +18,10 @@ import com.facebook.presto.Session;
 import com.facebook.presto.SystemSessionProperties;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.common.block.BlockEncodingSerde;
 import com.facebook.presto.common.block.SortOrder;
 import com.facebook.presto.common.function.OperatorType;
-import com.facebook.presto.common.function.QualifiedFunctionName;
 import com.facebook.presto.common.function.SqlFunctionProperties;
 import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.common.type.Type;
@@ -45,7 +45,7 @@ import com.facebook.presto.expressions.LogicalRowExpressions;
 import com.facebook.presto.index.IndexManager;
 import com.facebook.presto.metadata.AnalyzeTableHandle;
 import com.facebook.presto.metadata.ConnectorMetadataUpdaterManager;
-import com.facebook.presto.metadata.FunctionManager;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.operator.AggregationOperator.AggregationOperatorFactory;
 import com.facebook.presto.operator.AssignUniqueIdOperator;
@@ -247,6 +247,7 @@ import static com.facebook.presto.SystemSessionProperties.getTaskPartitionedWrit
 import static com.facebook.presto.SystemSessionProperties.getTaskWriterCount;
 import static com.facebook.presto.SystemSessionProperties.isEnableDynamicFiltering;
 import static com.facebook.presto.SystemSessionProperties.isExchangeCompressionEnabled;
+import static com.facebook.presto.SystemSessionProperties.isJoinSpillingEnabled;
 import static com.facebook.presto.SystemSessionProperties.isOptimizeCommonSubExpressions;
 import static com.facebook.presto.SystemSessionProperties.isOptimizedRepartitioningEnabled;
 import static com.facebook.presto.SystemSessionProperties.isSpillEnabled;
@@ -275,6 +276,7 @@ import static com.facebook.presto.operator.WindowFunctionDefinition.window;
 import static com.facebook.presto.operator.unnest.UnnestOperator.UnnestOperatorFactory;
 import static com.facebook.presto.spi.StandardErrorCode.COMPILER_ERROR;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.spi.plan.AggregationNode.Step.FINAL;
 import static com.facebook.presto.spi.plan.AggregationNode.Step.INTERMEDIATE;
 import static com.facebook.presto.spi.plan.AggregationNode.Step.PARTIAL;
@@ -402,8 +404,8 @@ public class LocalExecutionPlanner
         this.tableCommitContextCodec = requireNonNull(tableCommitContextCodec, "tableCommitContextCodec is null");
         this.logicalRowExpressions = new LogicalRowExpressions(
                 requireNonNull(determinismEvaluator, "determinismEvaluator is null"),
-                new FunctionResolution(metadata.getFunctionManager()),
-                metadata.getFunctionManager());
+                new FunctionResolution(metadata.getFunctionAndTypeManager()),
+                metadata.getFunctionAndTypeManager());
     }
 
     public LocalExecutionPlan plan(
@@ -579,6 +581,16 @@ public class LocalExecutionPlanner
                 .forEach(LocalPlannerAware::localPlannerComplete);
 
         return new LocalExecutionPlan(context.getDriverFactories(), partitionedSourceOrder, stageExecutionDescriptor);
+    }
+
+    private static boolean isOnlyScanFilterProject(PlanNode planNode)
+    {
+        if (planNode instanceof TableScanNode ||
+                planNode instanceof FilterNode ||
+                planNode instanceof ProjectNode) {
+            return planNode.getSources().stream().allMatch(LocalExecutionPlanner::isOnlyScanFilterProject);
+        }
+        return false;
     }
 
     private static void addLookupOuterDrivers(LocalExecutionPlanContext context)
@@ -872,7 +884,7 @@ public class LocalExecutionPlanner
                     context.getNextOperatorId(),
                     node.getId(),
                     analyzeContext.getQueryPerformanceFetcher(),
-                    metadata.getFunctionManager(),
+                    metadata.getFunctionAndTypeManager(),
                     node.isVerbose());
             return new PhysicalOperation(operatorFactory, makeLayout(node), context, source);
         }
@@ -1019,9 +1031,9 @@ public class LocalExecutionPlanner
                     arguments.add(source.getLayout().get(argument));
                 }
                 VariableReferenceExpression variable = entry.getKey();
-                FunctionManager functionManager = metadata.getFunctionManager();
-                WindowFunctionSupplier windowFunctionSupplier = functionManager.getWindowFunctionImplementation(functionHandle);
-                Type type = metadata.getType(functionManager.getFunctionMetadata(functionHandle).getReturnType());
+                FunctionAndTypeManager functionAndTypeManager = metadata.getFunctionAndTypeManager();
+                WindowFunctionSupplier windowFunctionSupplier = functionAndTypeManager.getWindowFunctionImplementation(functionHandle);
+                Type type = metadata.getType(functionAndTypeManager.getFunctionMetadata(functionHandle).getReturnType());
                 windowFunctionsBuilder.add(window(windowFunctionSupplier, type, frameInfo, function.isIgnoreNulls(), arguments.build()));
                 windowFunctionOutputVariablesBuilder.add(variable);
             }
@@ -1390,7 +1402,7 @@ public class LocalExecutionPlanner
                     OperatorFactory operatorFactory = new RemoteProjectOperatorFactory(
                             context.getNextOperatorId(),
                             planNodeId,
-                            metadata.getFunctionManager(),
+                            metadata.getFunctionAndTypeManager(),
                             projections);
                     return new PhysicalOperation(operatorFactory, outputMappings, context, source);
                 }
@@ -1558,7 +1570,7 @@ public class LocalExecutionPlanner
             List<Integer> remappedProbeKeyChannels = remappedProbeKeyChannelsBuilder.build();
             Function<RecordSet, RecordSet> probeKeyNormalizer = recordSet -> {
                 if (!overlappingFieldSets.isEmpty()) {
-                    recordSet = new FieldSetFilteringRecordSet(metadata.getFunctionManager(), recordSet, overlappingFieldSets);
+                    recordSet = new FieldSetFilteringRecordSet(metadata.getFunctionAndTypeManager(), recordSet, overlappingFieldSets);
                 }
                 return new MappedRecordSet(recordSet, remappedProbeKeyChannels);
             };
@@ -1752,7 +1764,7 @@ public class LocalExecutionPlanner
         public PhysicalOperation visitSpatialJoin(SpatialJoinNode node, LocalExecutionPlanContext context)
         {
             RowExpression filterExpression = node.getFilter();
-            List<CallExpression> spatialFunctions = extractSupportedSpatialFunctions(filterExpression, metadata.getFunctionManager());
+            List<CallExpression> spatialFunctions = extractSupportedSpatialFunctions(filterExpression, metadata.getFunctionAndTypeManager());
             for (CallExpression spatialFunction : spatialFunctions) {
                 Optional<PhysicalOperation> operation = tryCreateSpatialJoin(context, node, removeExpressionFromFilter(filterExpression, spatialFunction), spatialFunction, Optional.empty(), Optional.empty());
                 if (operation.isPresent()) {
@@ -1760,9 +1772,9 @@ public class LocalExecutionPlanner
                 }
             }
 
-            List<CallExpression> spatialComparisons = extractSupportedSpatialComparisons(filterExpression, metadata.getFunctionManager());
+            List<CallExpression> spatialComparisons = extractSupportedSpatialComparisons(filterExpression, metadata.getFunctionAndTypeManager());
             for (CallExpression spatialComparison : spatialComparisons) {
-                FunctionMetadata functionMetadata = metadata.getFunctionManager().getFunctionMetadata(spatialComparison.getFunctionHandle());
+                FunctionMetadata functionMetadata = metadata.getFunctionAndTypeManager().getFunctionMetadata(spatialComparison.getFunctionHandle());
                 checkArgument(functionMetadata.getOperatorType().isPresent() && functionMetadata.getOperatorType().get().isComparisonOperator());
                 if (functionMetadata.getOperatorType().get() == OperatorType.LESS_THAN || functionMetadata.getOperatorType().get() == OperatorType.LESS_THAN_OR_EQUAL) {
                     // ST_Distance(a, b) <= r
@@ -1845,8 +1857,8 @@ public class LocalExecutionPlanner
 
         private SpatialPredicate spatialTest(CallExpression functionCall, boolean probeFirst, Optional<OperatorType> comparisonOperator)
         {
-            FunctionMetadata functionMetadata = metadata.getFunctionManager().getFunctionMetadata(functionCall.getFunctionHandle());
-            QualifiedFunctionName functionName = functionMetadata.getName();
+            FunctionMetadata functionMetadata = metadata.getFunctionAndTypeManager().getFunctionMetadata(functionCall.getFunctionHandle());
+            QualifiedObjectName functionName = functionMetadata.getName();
             List<TypeSignature> argumentTypes = functionMetadata.getArgumentTypes();
             Predicate<TypeSignature> isSpherical = (typeSignature)
                     -> typeSignature.equals(SPHERICAL_GEOGRAPHY_TYPE_SIGNATURE);
@@ -1861,7 +1873,7 @@ public class LocalExecutionPlanner
             }
         }
 
-        private SpatialPredicate euclideanSpatialTest(QualifiedFunctionName functionName, Optional<OperatorType> comparisonOperator, boolean probeFirst)
+        private SpatialPredicate euclideanSpatialTest(QualifiedObjectName functionName, Optional<OperatorType> comparisonOperator, boolean probeFirst)
         {
             if (functionName.equals(ST_CONTAINS)) {
                 if (probeFirst) {
@@ -1908,7 +1920,7 @@ public class LocalExecutionPlanner
             throw new UnsupportedOperationException("Unsupported spatial function: " + functionName);
         }
 
-        private SpatialPredicate sphericalSpatialTest(QualifiedFunctionName functionName, Optional<OperatorType> comparisonOperator)
+        private SpatialPredicate sphericalSpatialTest(QualifiedObjectName functionName, Optional<OperatorType> comparisonOperator)
         {
             if (functionName.equals(ST_DISTANCE)) {
                 if (comparisonOperator.get() == OperatorType.LESS_THAN) {
@@ -2153,7 +2165,7 @@ public class LocalExecutionPlanner
             OptionalInt buildHashChannel = buildHashVariable.map(variableChannelGetter(buildSource))
                     .map(OptionalInt::of).orElse(OptionalInt.empty());
 
-            boolean spillEnabled = isSpillEnabled(context.getSession());
+            boolean spillEnabled = isSpillEnabled(context.getSession()) && isJoinSpillingEnabled(context.getSession());
             boolean buildOuter = node.getType() == RIGHT || node.getType() == FULL;
             int partitionCount = buildContext.getDriverInstanceCount().orElse(1);
 
@@ -2164,7 +2176,7 @@ public class LocalExecutionPlanner
                             probeSource.getLayout(),
                             buildSource.getLayout()));
 
-            Optional<SortExpressionContext> sortExpressionContext = node.getSortExpressionContext(metadata.getFunctionManager());
+            Optional<SortExpressionContext> sortExpressionContext = node.getSortExpressionContext(metadata.getFunctionAndTypeManager());
 
             Optional<Integer> sortChannel = sortExpressionContext
                     .map(SortExpressionContext::getSortExpression)
@@ -2267,9 +2279,9 @@ public class LocalExecutionPlanner
             if (node.getDynamicFilters().isEmpty()) {
                 return Optional.empty();
             }
-            checkState(
-                    buildSource.getPipelineExecutionStrategy() != GROUPED_EXECUTION,
-                    "Dynamic filtering cannot be used with grouped execution");
+            if (buildSource.getPipelineExecutionStrategy() == GROUPED_EXECUTION) {
+                throw new PrestoException(NOT_SUPPORTED, "Dynamic filtering cannot be used with grouped execution");
+            }
             LocalDynamicFiltersCollector collector = context.getDynamicFiltersCollector();
             return LocalDynamicFilter
                     .create(node, partitionCount)
@@ -2337,7 +2349,7 @@ public class LocalExecutionPlanner
         private OptionalInt getJoinOperatorsCountForSpill(LocalExecutionPlanContext context, Session session)
         {
             OptionalInt driverInstanceCount = context.getDriverInstanceCount();
-            if (isSpillEnabled(session)) {
+            if (isSpillEnabled(session) && isJoinSpillingEnabled(session)) {
                 checkState(driverInstanceCount.isPresent(), "A fixed distribution is required for JOIN when spilling is enabled");
             }
             return driverInstanceCount;
@@ -2851,8 +2863,8 @@ public class LocalExecutionPlanner
                 Aggregation aggregation,
                 boolean spillEnabled)
         {
-            FunctionManager functionManager = metadata.getFunctionManager();
-            InternalAggregationFunction internalAggregationFunction = functionManager.getAggregateFunctionImplementation(aggregation.getFunctionHandle());
+            FunctionAndTypeManager functionAndTypeManager = metadata.getFunctionAndTypeManager();
+            InternalAggregationFunction internalAggregationFunction = functionAndTypeManager.getAggregateFunctionImplementation(aggregation.getFunctionHandle());
 
             List<Integer> valueChannels = new ArrayList<>();
             for (RowExpression argument : aggregation.getArguments()) {

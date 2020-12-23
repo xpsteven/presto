@@ -19,6 +19,7 @@ import com.facebook.presto.PagesIndexPageSorter;
 import com.facebook.presto.Session;
 import com.facebook.presto.SystemSessionProperties;
 import com.facebook.presto.block.BlockEncodingManager;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.common.block.SortOrder;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.connector.ConnectorManager;
@@ -82,12 +83,12 @@ import com.facebook.presto.metadata.AnalyzePropertyManager;
 import com.facebook.presto.metadata.CatalogManager;
 import com.facebook.presto.metadata.ColumnPropertyManager;
 import com.facebook.presto.metadata.ConnectorMetadataUpdaterManager;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.HandleResolver;
 import com.facebook.presto.metadata.InMemoryNodeManager;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.MetadataManager;
 import com.facebook.presto.metadata.MetadataUtil;
-import com.facebook.presto.metadata.QualifiedObjectName;
 import com.facebook.presto.metadata.QualifiedTablePrefix;
 import com.facebook.presto.metadata.SchemaPropertyManager;
 import com.facebook.presto.metadata.SessionPropertyManager;
@@ -182,7 +183,6 @@ import com.facebook.presto.testing.PageConsumerOperator.PageConsumerOutputFactor
 import com.facebook.presto.transaction.InMemoryTransactionManager;
 import com.facebook.presto.transaction.TransactionManager;
 import com.facebook.presto.transaction.TransactionManagerConfig;
-import com.facebook.presto.type.TypeRegistry;
 import com.facebook.presto.util.FinalizerService;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -244,7 +244,6 @@ public class LocalQueryRunner
     private final SqlParser sqlParser;
     private final PlanFragmenter planFragmenter;
     private final InMemoryNodeManager nodeManager;
-    private final TypeRegistry typeRegistry;
     private final PageSorter pageSorter;
     private final PageIndexerFactory pageIndexerFactory;
     private final MetadataManager metadata;
@@ -317,7 +316,6 @@ public class LocalQueryRunner
 
         this.sqlParser = new SqlParser();
         this.nodeManager = new InMemoryNodeManager();
-        this.typeRegistry = new TypeRegistry();
         this.pageSorter = new PagesIndexPageSorter(new PagesIndex.TestingFactory(false));
         this.indexManager = new IndexManager();
         this.nodeSchedulerConfig = new NodeSchedulerConfig().setIncludeCoordinator(true);
@@ -339,12 +337,11 @@ public class LocalQueryRunner
         this.planOptimizerManager = new ConnectorPlanOptimizerManager();
         this.distributedMetadataManager = new ConnectorMetadataUpdaterManager();
 
-        this.blockEncodingManager = new BlockEncodingManager(typeRegistry);
+        this.blockEncodingManager = new BlockEncodingManager();
         featuresConfig.setIgnoreStatsCalculatorFailures(false);
 
         this.metadata = new MetadataManager(
-                featuresConfig,
-                typeRegistry,
+                new FunctionAndTypeManager(transactionManager, blockEncodingManager, featuresConfig, new HandleResolver(), ImmutableSet.of()),
                 blockEncodingManager,
                 new SessionPropertyManager(
                         new SystemSessionProperties(
@@ -394,13 +391,13 @@ public class LocalQueryRunner
                 new HandleResolver(),
                 nodeManager,
                 nodeInfo,
-                typeRegistry,
+                metadata.getFunctionAndTypeManager(),
                 pageSorter,
                 pageIndexerFactory,
                 transactionManager,
                 new RowExpressionDomainTranslator(metadata),
                 new RowExpressionPredicateCompiler(metadata),
-                new RowExpressionDeterminismEvaluator(metadata.getFunctionManager()),
+                new RowExpressionDeterminismEvaluator(metadata.getFunctionAndTypeManager()),
                 new FilterStatsCalculator(metadata, scalarStatsCalculator, statsNormalizer),
                 blockEncodingManager);
 
@@ -411,7 +408,7 @@ public class LocalQueryRunner
                 new TablePropertiesSystemTable(transactionManager, metadata),
                 new ColumnPropertiesSystemTable(transactionManager, metadata),
                 new AnalyzePropertiesSystemTable(transactionManager, metadata),
-                new TransactionsSystemTable(typeRegistry, transactionManager)),
+                new TransactionsSystemTable(metadata.getFunctionAndTypeManager(), transactionManager)),
                 ImmutableSet.of());
 
         this.pluginManager = new PluginManager(
@@ -424,8 +421,8 @@ public class LocalQueryRunner
                 new PasswordAuthenticatorManager(),
                 new EventListenerManager(),
                 blockEncodingManager,
-                new SessionPropertyDefaults(nodeInfo),
-                typeRegistry);
+                new TestingTempStorageManager(),
+                new SessionPropertyDefaults(nodeInfo));
 
         connectorManager.addConnectorFactory(globalSystemConnectorFactory);
         connectorManager.createConnection(GlobalSystemConnector.NAME, GlobalSystemConnector.NAME, ImmutableMap.of());
@@ -509,9 +506,9 @@ public class LocalQueryRunner
         return 1;
     }
 
-    public TypeRegistry getTypeManager()
+    public FunctionAndTypeManager getFunctionAndTypeManager()
     {
-        return typeRegistry;
+        return metadata.getFunctionAndTypeManager();
     }
 
     @Override
@@ -624,7 +621,7 @@ public class LocalQueryRunner
     @Override
     public void loadFunctionNamespaceManager(String functionNamespaceManagerName, String catalogName, Map<String, String> properties)
     {
-        metadata.getFunctionManager().loadFunctionNamespaceManager(functionNamespaceManagerName, catalogName, properties);
+        metadata.getFunctionAndTypeManager().loadFunctionNamespaceManager(functionNamespaceManagerName, catalogName, properties);
     }
 
     public LocalQueryRunner printPlan()
@@ -765,7 +762,7 @@ public class LocalQueryRunner
     private List<Driver> createDrivers(Session session, Plan plan, OutputFactory outputFactory, TaskContext taskContext)
     {
         if (printPlan) {
-            System.out.println(PlanPrinter.textLogicalPlan(plan.getRoot(), plan.getTypes(), metadata.getFunctionManager(), plan.getStatsAndCosts(), session, 0, false));
+            System.out.println(PlanPrinter.textLogicalPlan(plan.getRoot(), plan.getTypes(), metadata.getFunctionAndTypeManager(), plan.getStatsAndCosts(), session, 0, false));
         }
 
         SubPlan subplan = createSubPlans(session, plan, true);

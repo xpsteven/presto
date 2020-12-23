@@ -16,6 +16,7 @@ package com.facebook.presto.sql.analyzer;
 import com.facebook.presto.Session;
 import com.facebook.presto.SystemSessionProperties;
 import com.facebook.presto.common.CatalogSchemaName;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.common.function.OperatorType;
 import com.facebook.presto.common.type.ArrayType;
 import com.facebook.presto.common.type.DoubleType;
@@ -25,7 +26,6 @@ import com.facebook.presto.common.type.RowType;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.OperatorNotFoundException;
-import com.facebook.presto.metadata.QualifiedObjectName;
 import com.facebook.presto.metadata.TableMetadata;
 import com.facebook.presto.metadata.ViewDefinition;
 import com.facebook.presto.security.AccessControl;
@@ -408,7 +408,7 @@ class StatementAnalyzer
                             i + 1,
                             expectedColumns.get(i).getName());
                 }
-                if (!metadata.getTypeManager().canCoerce(
+                if (!metadata.getFunctionAndTypeManager().canCoerce(
                         queryColumnTypes.get(i),
                         expectedColumns.get(i).getType())) {
                     throw new SemanticException(MISMATCHED_SET_COLUMN_TYPES,
@@ -594,12 +594,12 @@ class StatementAnalyzer
             if (node.getBody() instanceof Return) {
                 Expression returnExpression = ((Return) node.getBody()).getExpression();
                 Type bodyType = analyzeExpression(returnExpression, functionScope).getExpressionTypes().get(NodeRef.of(returnExpression));
-                if (!metadata.getTypeManager().canCoerce(bodyType, returnType)) {
+                if (!metadata.getFunctionAndTypeManager().canCoerce(bodyType, returnType)) {
                     throw new SemanticException(TYPE_MISMATCH, node, "Function implementation type '%s' does not match declared return type '%s'", bodyType, returnType);
                 }
 
-                verifyNoAggregateWindowOrGroupingFunctions(analysis.getFunctionHandles(), metadata.getFunctionManager(), returnExpression, "CREATE FUNCTION body");
-                verifyNoExternalFunctions(analysis.getFunctionHandles(), metadata.getFunctionManager(), returnExpression, "CREATE FUNCTION body");
+                verifyNoAggregateWindowOrGroupingFunctions(analysis.getFunctionHandles(), metadata.getFunctionAndTypeManager(), returnExpression, "CREATE FUNCTION body");
+                verifyNoExternalFunctions(analysis.getFunctionHandles(), metadata.getFunctionAndTypeManager(), returnExpression, "CREATE FUNCTION body");
 
                 // TODO: Check body contains no SQL invoked functions
             }
@@ -1151,7 +1151,7 @@ class StatementAnalyzer
                 // and when aggregation is present, ORDER BY expressions should only be resolvable against
                 // output scope, group by expressions and aggregation expressions.
                 List<GroupingOperation> orderByGroupingOperations = extractExpressions(orderByExpressions, GroupingOperation.class);
-                List<FunctionCall> orderByAggregations = extractAggregateFunctions(analysis.getFunctionHandles(), orderByExpressions, metadata.getFunctionManager());
+                List<FunctionCall> orderByAggregations = extractAggregateFunctions(analysis.getFunctionHandles(), orderByExpressions, metadata.getFunctionAndTypeManager());
                 computeAndAssignOrderByScopeWithAggregation(node.getOrderBy().get(), sourceScope, outputScope, orderByAggregations, groupByExpressions, orderByGroupingOperations);
             }
 
@@ -1195,7 +1195,7 @@ class StatementAnalyzer
                 }
                 for (int i = 0; i < descFieldSize; i++) {
                     Type descFieldType = relationType.getFieldByIndex(i).getType();
-                    Optional<Type> commonSuperType = metadata.getTypeManager().getCommonSuperType(outputFieldTypes[i], descFieldType);
+                    Optional<Type> commonSuperType = metadata.getFunctionAndTypeManager().getCommonSuperType(outputFieldTypes[i], descFieldType);
                     if (!commonSuperType.isPresent()) {
                         throw new SemanticException(
                                 TYPE_MISMATCH,
@@ -1320,7 +1320,7 @@ class StatementAnalyzer
                     analysis.addCoercion(expression, BOOLEAN, false);
                 }
 
-                verifyNoAggregateWindowOrGroupingFunctions(analysis.getFunctionHandles(), metadata.getFunctionManager(), expression, "JOIN clause");
+                verifyNoAggregateWindowOrGroupingFunctions(analysis.getFunctionHandles(), metadata.getFunctionAndTypeManager(), expression, "JOIN clause");
 
                 analysis.recordSubqueries(node, expressionAnalysis);
                 analysis.setJoinCriteria(node, expression);
@@ -1357,20 +1357,35 @@ class StatementAnalyzer
 
                 // ensure a comparison operator exists for the given types (applying coercions if necessary)
                 try {
-                    metadata.getFunctionManager().resolveOperator(OperatorType.EQUAL, fromTypes(
+                    metadata.getFunctionAndTypeManager().resolveOperator(OperatorType.EQUAL, fromTypes(
                             leftField.get().getType(), rightField.get().getType()));
                 }
                 catch (OperatorNotFoundException e) {
                     throw new SemanticException(TYPE_MISMATCH, column, "%s", e.getMessage());
                 }
 
-                Optional<Type> type = metadata.getTypeManager().getCommonSuperType(leftField.get().getType(), rightField.get().getType());
+                Optional<Type> type = metadata.getFunctionAndTypeManager().getCommonSuperType(leftField.get().getType(), rightField.get().getType());
                 analysis.addTypes(ImmutableMap.of(NodeRef.of(column), type.get()));
 
                 joinFields.add(Field.newUnqualified(column.getValue(), type.get()));
 
                 leftJoinFields.add(leftField.get().getRelationFieldIndex());
                 rightJoinFields.add(rightField.get().getRelationFieldIndex());
+
+                analysis.addColumnReference(NodeRef.of(column), FieldId.from(leftField.get()));
+                analysis.addColumnReference(NodeRef.of(column), FieldId.from(rightField.get()));
+                if (leftField.get().getField().getOriginTable().isPresent() && leftField.get().getField().getOriginColumnName().isPresent()) {
+                    analysis.addTableColumnReferences(
+                            accessControl,
+                            session.getIdentity(),
+                            ImmutableMultimap.of(leftField.get().getField().getOriginTable().get(), leftField.get().getField().getOriginColumnName().get()));
+                }
+                if (rightField.get().getField().getOriginTable().isPresent() && rightField.get().getField().getOriginColumnName().isPresent()) {
+                    analysis.addTableColumnReferences(
+                            accessControl,
+                            session.getIdentity(),
+                            ImmutableMultimap.of(rightField.get().getField().getOriginTable().get(), rightField.get().getField().getOriginColumnName().get()));
+                }
             }
 
             ImmutableList.Builder<Field> outputs = ImmutableList.builder();
@@ -1436,7 +1451,7 @@ class StatementAnalyzer
                     Type fieldType = rowType.get(i);
                     Type superType = fieldTypes.get(i);
 
-                    Optional<Type> commonSuperType = metadata.getTypeManager().getCommonSuperType(fieldType, superType);
+                    Optional<Type> commonSuperType = metadata.getFunctionAndTypeManager().getCommonSuperType(fieldType, superType);
                     if (!commonSuperType.isPresent()) {
                         throw new SemanticException(MISMATCHED_SET_COLUMN_TYPES,
                                 node,
@@ -1457,7 +1472,7 @@ class StatementAnalyzer
                         Expression item = items.get(i);
                         Type actualType = analysis.getType(item);
                         if (!actualType.equals(expectedType)) {
-                            analysis.addCoercion(item, expectedType, metadata.getTypeManager().isTypeOnlyCoercion(actualType, expectedType));
+                            analysis.addCoercion(item, expectedType, metadata.getFunctionAndTypeManager().isTypeOnlyCoercion(actualType, expectedType));
                         }
                     }
                 }
@@ -1465,7 +1480,7 @@ class StatementAnalyzer
                     Type actualType = analysis.getType(row);
                     Type expectedType = fieldTypes.get(0);
                     if (!actualType.equals(expectedType)) {
-                        analysis.addCoercion(row, expectedType, metadata.getTypeManager().isTypeOnlyCoercion(actualType, expectedType));
+                        analysis.addCoercion(row, expectedType, metadata.getFunctionAndTypeManager().isTypeOnlyCoercion(actualType, expectedType));
                     }
                 }
             }
@@ -1488,7 +1503,7 @@ class StatementAnalyzer
         private List<FunctionCall> analyzeWindowFunctions(QuerySpecification node, List<Expression> expressions)
         {
             for (Expression expression : expressions) {
-                new WindowFunctionValidator(metadata.getFunctionManager()).process(expression, analysis);
+                new WindowFunctionValidator(metadata.getFunctionAndTypeManager()).process(expression, analysis);
             }
 
             List<FunctionCall> windowFunctions = extractWindowFunctions(expressions);
@@ -1527,7 +1542,7 @@ class StatementAnalyzer
                     analyzeWindowFrame(window.getFrame().get());
                 }
 
-                FunctionKind kind = metadata.getFunctionManager().getFunctionMetadata(analysis.getFunctionHandle(windowFunction)).getFunctionKind();
+                FunctionKind kind = metadata.getFunctionAndTypeManager().getFunctionMetadata(analysis.getFunctionHandle(windowFunction)).getFunctionKind();
                 if (kind != AGGREGATE && kind != WINDOW) {
                     throw new SemanticException(MUST_BE_WINDOW_FUNCTION, node, "Not a window function: %s", windowFunction.getName());
                 }
@@ -1712,12 +1727,11 @@ class StatementAnalyzer
                                 analyzeExpression(column, scope);
                             }
 
-                            FieldId field = analysis.getColumnReferenceFields().get(NodeRef.of(column));
-                            if (field != null) {
-                                sets.add(ImmutableList.of(ImmutableSet.of(field)));
+                            if (analysis.getColumnReferenceFields().containsKey(NodeRef.of(column))) {
+                                sets.add(ImmutableList.of(ImmutableSet.copyOf(analysis.getColumnReferenceFields().get(NodeRef.of(column)))));
                             }
                             else {
-                                verifyNoAggregateWindowOrGroupingFunctions(analysis.getFunctionHandles(), metadata.getFunctionManager(), column, "GROUP BY clause");
+                                verifyNoAggregateWindowOrGroupingFunctions(analysis.getFunctionHandles(), metadata.getFunctionAndTypeManager(), column, "GROUP BY clause");
                                 analysis.recordSubqueries(node, analyzeExpression(column, scope));
                                 complexExpressions.add(column);
                             }
@@ -1739,6 +1753,7 @@ class StatementAnalyzer
                             Set<FieldId> cube = groupingElement.getExpressions().stream()
                                     .map(NodeRef::of)
                                     .map(analysis.getColumnReferenceFields()::get)
+                                    .flatMap(Collection::stream)
                                     .collect(toImmutableSet());
 
                             cubes.add(cube);
@@ -1747,6 +1762,7 @@ class StatementAnalyzer
                             List<FieldId> rollup = groupingElement.getExpressions().stream()
                                     .map(NodeRef::of)
                                     .map(analysis.getColumnReferenceFields()::get)
+                                    .flatMap(Collection::stream)
                                     .collect(toImmutableList());
 
                             rollups.add(rollup);
@@ -1756,6 +1772,7 @@ class StatementAnalyzer
                                     .map(set -> set.stream()
                                             .map(NodeRef::of)
                                             .map(analysis.getColumnReferenceFields()::get)
+                                            .flatMap(Collection::stream)
                                             .collect(toImmutableSet()))
                                     .collect(toImmutableList());
 
@@ -1950,7 +1967,7 @@ class StatementAnalyzer
         {
             ExpressionAnalysis expressionAnalysis = analyzeExpression(predicate, scope);
 
-            verifyNoAggregateWindowOrGroupingFunctions(analysis.getFunctionHandles(), metadata.getFunctionManager(), predicate, "WHERE clause");
+            verifyNoAggregateWindowOrGroupingFunctions(analysis.getFunctionHandles(), metadata.getFunctionAndTypeManager(), predicate, "WHERE clause");
 
             analysis.recordSubqueries(node, expressionAnalysis);
 
@@ -1995,7 +2012,7 @@ class StatementAnalyzer
                 List<Expression> outputExpressions,
                 List<Expression> orderByExpressions)
         {
-            List<FunctionCall> aggregates = extractAggregateFunctions(analysis.getFunctionHandles(), Iterables.concat(outputExpressions, orderByExpressions), metadata.getFunctionManager());
+            List<FunctionCall> aggregates = extractAggregateFunctions(analysis.getFunctionHandles(), Iterables.concat(outputExpressions, orderByExpressions), metadata.getFunctionAndTypeManager());
             analysis.setAggregates(node, aggregates);
             return aggregates;
         }
@@ -2091,7 +2108,7 @@ class StatementAnalyzer
                 ViewDefinition.ViewColumn column = columns.get(i);
                 Field field = fieldList.get(i);
                 if (!column.getName().equalsIgnoreCase(field.getName().orElse(null)) ||
-                        !metadata.getTypeManager().canCoerce(field.getType(), column.getType())) {
+                        !metadata.getFunctionAndTypeManager().canCoerce(field.getType(), column.getType())) {
                     return true;
                 }
             }

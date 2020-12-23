@@ -160,6 +160,7 @@ public class HiveClientConfig
     private String temporaryTableSchema = "default";
     private HiveStorageFormat temporaryTableStorageFormat = ORC;
     private HiveCompressionCodec temporaryTableCompressionCodec = HiveCompressionCodec.SNAPPY;
+    private boolean usePageFileForHiveUnsupportedType = true;
 
     private boolean pushdownFilterEnabled;
     private boolean rangeFiltersOnSubscriptsEnabled;
@@ -179,6 +180,10 @@ public class HiveClientConfig
 
     private boolean isPartialAggregationPushdownEnabled;
     private boolean isPartialAggregationPushdownForVariableLengthDatatypesEnabled;
+
+    private boolean fileRenamingEnabled;
+    private boolean preferManifestToListFiles;
+    private boolean manifestVerificationEnabled;
 
     public int getMaxInitialSplits()
     {
@@ -1368,6 +1373,18 @@ public class HiveClientConfig
         return this;
     }
 
+    public boolean getUsePageFileForHiveUnsupportedType()
+    {
+        return usePageFileForHiveUnsupportedType;
+    }
+
+    @Config("hive.use-pagefile-for-hive-unsupported-type")
+    public HiveClientConfig setUsePageFileForHiveUnsupportedType(boolean usePageFileForHiveUnsupportedType)
+    {
+        this.usePageFileForHiveUnsupportedType = usePageFileForHiveUnsupportedType;
+        return this;
+    }
+
     public boolean isPushdownFilterEnabled()
     {
         return pushdownFilterEnabled;
@@ -1495,5 +1512,44 @@ public class HiveClientConfig
     public boolean isPartialAggregationPushdownForVariableLengthDatatypesEnabled()
     {
         return this.isPartialAggregationPushdownForVariableLengthDatatypesEnabled;
+    }
+
+    @Config("hive.file_renaming_enabled")
+    @ConfigDescription("enable file renaming")
+    public HiveClientConfig setFileRenamingEnabled(boolean fileRenamingEnabled)
+    {
+        this.fileRenamingEnabled = fileRenamingEnabled;
+        return this;
+    }
+
+    public boolean isFileRenamingEnabled()
+    {
+        return this.fileRenamingEnabled;
+    }
+
+    @Config("hive.prefer-manifests-to-list-files")
+    @ConfigDescription("Prefer to fetch the list of file names and sizes from manifests rather than storage")
+    public HiveClientConfig setPreferManifestsToListFiles(boolean preferManifestToListFiles)
+    {
+        this.preferManifestToListFiles = preferManifestToListFiles;
+        return this;
+    }
+
+    public boolean isPreferManifestsToListFiles()
+    {
+        return this.preferManifestToListFiles;
+    }
+
+    @Config("hive.manifest-verification-enabled")
+    @ConfigDescription("Enable verification of file names and sizes in manifest / partition parameters")
+    public HiveClientConfig setManifestVerificationEnabled(boolean manifestVerificationEnabled)
+    {
+        this.manifestVerificationEnabled = manifestVerificationEnabled;
+        return this;
+    }
+
+    public boolean isManifestVerificationEnabled()
+    {
+        return this.manifestVerificationEnabled;
     }
 }

@@ -131,7 +131,6 @@ public class SliceDictionarySelectiveReader
     private OrcLocalMemoryContext systemMemoryContext;
 
     private int[] values;
-    private int nullsCount;
     private boolean allNulls;
     private int[] outputPositions;
     private int outputPositionCount;
@@ -163,7 +162,6 @@ public class SliceDictionarySelectiveReader
             openRowGroup();
         }
 
-        nullsCount = 0;
         allNulls = false;
 
         if (outputRequired) {
@@ -209,7 +207,6 @@ public class SliceDictionarySelectiveReader
 
             if (presentStream != null && !presentStream.nextBit()) {
                 values[i] = currentDictionarySize - 1;
-                nullsCount++;
             }
             else {
                 boolean isInRowDictionary = inDictionaryStream != null && !inDictionaryStream.nextBit();
@@ -237,7 +234,6 @@ public class SliceDictionarySelectiveReader
                 if ((nonDeterministicFilter && filter.testNull()) || nullsAllowed) {
                     if (outputRequired) {
                         values[outputPositionCount] = currentDictionarySize - 1;
-                        nullsCount++;
                     }
                     outputPositions[outputPositionCount] = position;
                     outputPositionCount++;
@@ -388,40 +384,32 @@ public class SliceDictionarySelectiveReader
         checkState(positionCount <= outputPositionCount, "Not enough values");
         checkState(!valuesInUse, "BlockLease hasn't been closed yet");
 
-        if (allNulls || nullsCount == outputPositionCount) {
+        if (allNulls) {
             return new RunLengthEncodedBlock(outputType.createBlockBuilder(null, 1).appendNull().build(), positionCount);
         }
 
         // compact values(ids) array, and calculate 1) the slice sizeInBytes if materialized, and 2) number of nulls
+        compactValues(positions, positionCount);
+
         long blockSizeInBytes = 0;
-        int nullsCount = 0;  // the nulls count for selected positions
-        int i = 0;
-        int j = 0;
-        while (i < positionCount && j < outputPositionCount) {
-            if (positions[i] != outputPositions[j]) {
-                j++;
-                continue;
-            }
-
-            int id = this.values[j];
-            values[i] = id;
-
+        int nullCount = 0;
+        for (int i = 0; i < positionCount; i++) {
+            int id = values[i];
             blockSizeInBytes += dictionaryOffsetVector[id + 1] - dictionaryOffsetVector[id];
-            nullsCount += (id == currentDictionarySize - 1 ? 1 : 0);
-
-            i++;
-            j++;
+            if (id == currentDictionarySize - 1) {
+                nullCount++;
+            }
         }
 
         // If all selected positions are null, just return RLE block.
-        if (nullsCount == outputPositionCount) {
+        if (nullCount == positionCount) {
             return new RunLengthEncodedBlock(outputType.createBlockBuilder(null, 1).appendNull().build(), positionCount);
         }
 
         // If the expected materialized size of the output block is smaller than a certain ratio of the dictionary size, we will materialize the values
         int dictionarySizeInBytes = dictionaryOffsetVector[currentDictionarySize - 1];
         if (blockSizeInBytes * BATCHES_PER_ROWGROUP < dictionarySizeInBytes / MATERIALIZATION_RATIO) {
-            return getMaterializedBlock(positionCount, blockSizeInBytes, nullsCount);
+            return getMaterializedBlock(positionCount, blockSizeInBytes, nullCount);
         }
 
         wrapDictionaryIfNecessary();
@@ -709,26 +697,26 @@ public class SliceDictionarySelectiveReader
         return ClosingBlockLease.newLease(block, () -> valuesInUse = false);
     }
 
-    private Block getMaterializedBlock(int positionCount, long blockSizeInBytes, int nullsCount)
+    private Block getMaterializedBlock(int positionCount, long blockSizeInBytes, int nullCount)
     {
         byte[] sliceData = new byte[toIntExact(blockSizeInBytes)];
         int[] offsetVector = new int[positionCount + 1];
         int currentOffset = 0;
-        for (int k = 0; k < positionCount; k++) {
-            int id = values[k];
+        for (int i = 0; i < positionCount; i++) {
+            int id = values[i];
             int offset = dictionaryOffsetVector[id];
             int length = dictionaryOffsetVector[id + 1] - offset;
             System.arraycopy(dictionaryData, offset, sliceData, currentOffset, length);
 
             currentOffset += length;
-            offsetVector[k + 1] = currentOffset;
+            offsetVector[i + 1] = currentOffset;
         }
 
-        if (nullsCount > 0) {
+        if (nullCount > 0) {
             boolean[] isNullVector = new boolean[positionCount];
-            for (int k = 0; k < positionCount; k++) {
-                if (values[k] == currentDictionarySize - 1) {
-                    isNullVector[k] = true;
+            for (int i = 0; i < positionCount; i++) {
+                if (values[i] == currentDictionarySize - 1) {
+                    isNullVector[i] = true;
                 }
             }
             return new VariableWidthBlock(positionCount, wrappedBuffer(sliceData), offsetVector, Optional.of(isNullVector));

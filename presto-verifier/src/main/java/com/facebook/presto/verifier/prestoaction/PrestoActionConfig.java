@@ -44,6 +44,8 @@ public class PrestoActionConfig
     private Optional<Integer> httpPort = Optional.empty();
     private Map<String, String> jdbcUrlParameters = ImmutableMap.of();
     private Duration queryTimeout = new Duration(60, MINUTES);
+    private String applicationName = "verifier-test";
+    private boolean removeMemoryRelatedSessionProperties = true;
 
     @Override
     @NotNull
@@ -124,6 +126,31 @@ public class PrestoActionConfig
     public PrestoActionConfig setQueryTimeout(Duration queryTimeout)
     {
         this.queryTimeout = queryTimeout;
+        return this;
+    }
+
+    @NotNull
+    public String getApplicationName()
+    {
+        return applicationName;
+    }
+
+    @Config("application-name")
+    public PrestoActionConfig setApplicationName(String applicationName)
+    {
+        this.applicationName = applicationName;
+        return this;
+    }
+
+    public boolean isRemoveMemoryRelatedSessionProperties()
+    {
+        return removeMemoryRelatedSessionProperties;
+    }
+
+    @Config("remove-memory-related-session-properties")
+    public PrestoActionConfig setRemoveMemoryRelatedSessionProperties(boolean removeMemoryRelatedSessionProperties)
+    {
+        this.removeMemoryRelatedSessionProperties = removeMemoryRelatedSessionProperties;
         return this;
     }
 }

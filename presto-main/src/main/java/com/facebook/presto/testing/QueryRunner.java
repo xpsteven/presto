@@ -14,9 +14,9 @@
 package com.facebook.presto.testing;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.cost.StatsCalculator;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.metadata.QualifiedObjectName;
 import com.facebook.presto.spi.Plugin;
 import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.spi.eventlistener.EventListener;
@@ -84,7 +84,7 @@ public interface QueryRunner
 
     void createCatalog(String catalogName, String connectorName, Map<String, String> properties);
 
-    void loadFunctionNamespaceManager(String catalogName, String connectorName, Map<String, String> properties);
+    void loadFunctionNamespaceManager(String functionNamespaceManagerName, String catalogName, Map<String, String> properties);
 
     Lock getExclusiveLock();
 

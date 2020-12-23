@@ -34,6 +34,7 @@ import com.facebook.presto.sql.tree.ColumnDefinition;
 import com.facebook.presto.sql.tree.Commit;
 import com.facebook.presto.sql.tree.ComparisonExpression;
 import com.facebook.presto.sql.tree.CreateFunction;
+import com.facebook.presto.sql.tree.CreateMaterializedView;
 import com.facebook.presto.sql.tree.CreateRole;
 import com.facebook.presto.sql.tree.CreateSchema;
 import com.facebook.presto.sql.tree.CreateTable;
@@ -140,6 +141,7 @@ import com.facebook.presto.sql.tree.TimestampLiteral;
 import com.facebook.presto.sql.tree.TransactionAccessMode;
 import com.facebook.presto.sql.tree.Union;
 import com.facebook.presto.sql.tree.Unnest;
+import com.facebook.presto.sql.tree.Use;
 import com.facebook.presto.sql.tree.Values;
 import com.facebook.presto.sql.tree.Window;
 import com.facebook.presto.sql.tree.With;
@@ -1486,6 +1488,43 @@ public class TestSqlParser
     }
 
     @Test
+    public void testCreateMaterializedView()
+    {
+        Query query = simpleQuery(selectList(new AllColumns()), table(QualifiedName.of("t")));
+        assertStatement(
+                "CREATE MATERIALIZED VIEW mv" +
+                        " AS SELECT * FROM t",
+                new CreateMaterializedView(Optional.empty(), QualifiedName.of("mv"), query, false, ImmutableList.of(), Optional.empty()));
+
+        assertStatement(
+                "CREATE MATERIALIZED VIEW mv COMMENT 'A simple materialized view'" +
+                        " AS SELECT * FROM t",
+                new CreateMaterializedView(Optional.empty(), QualifiedName.of("mv"), query, false, ImmutableList.of(), Optional.of("A simple materialized view")));
+
+        assertStatement(
+                "CREATE MATERIALIZED VIEW IF NOT EXISTS mv COMMENT 'A simple materialized view'" +
+                        " AS SELECT * FROM t",
+                new CreateMaterializedView(Optional.empty(), QualifiedName.of("mv"), query, true, ImmutableList.of(), Optional.of("A simple materialized view")));
+
+        List<Property> properties = ImmutableList.of(
+                new Property(new Identifier("partitioned_by"), new ArrayConstructor(ImmutableList.of(new StringLiteral("ds")))));
+        assertStatement(
+                "CREATE MATERIALIZED VIEW IF NOT EXISTS mv COMMENT 'A simple materialized view'" +
+                        " WITH (partitioned_by = ARRAY ['ds'])" +
+                        " AS SELECT * FROM t",
+                new CreateMaterializedView(Optional.empty(), QualifiedName.of("mv"), query, true, properties, Optional.of("A simple materialized view")));
+
+        List<Property> properties1 = ImmutableList.of(
+                new Property(new Identifier("partitioned_by"), new ArrayConstructor(ImmutableList.of(new StringLiteral("ds")))),
+                new Property(new Identifier("retention_days"), new LongLiteral("90")));
+        assertStatement(
+                "CREATE MATERIALIZED VIEW IF NOT EXISTS mv COMMENT 'A simple materialized view'" +
+                        " WITH (partitioned_by = ARRAY ['ds'], retention_days = 90)" +
+                        " AS SELECT * FROM t",
+                new CreateMaterializedView(Optional.empty(), QualifiedName.of("mv"), query, true, properties1, Optional.of("A simple materialized view")));
+    }
+
+    @Test
     public void testCreateFunction()
     {
         assertStatement(
@@ -2439,6 +2478,16 @@ public class TestSqlParser
                         false,
                         false,
                         ImmutableList.of(new Identifier("x"), new LongLiteral("1"))));
+    }
+
+    @Test
+    public void testUse()
+    {
+        assertStatement("Use test_schema", new Use(Optional.empty(), identifier("test_schema")));
+        assertStatement("Use test_catalog.test_schema", new Use(Optional.of(identifier("test_catalog")), new Identifier("test_schema")));
+
+        assertStatement("Use \"test_schema\"", new Use(Optional.empty(), quotedIdentifier("test_schema")));
+        assertStatement("Use \"test_catalog\".\"test_schema\"", new Use(Optional.of(quotedIdentifier("test_catalog")), quotedIdentifier("test_schema")));
     }
 
     private static void assertCast(String type)

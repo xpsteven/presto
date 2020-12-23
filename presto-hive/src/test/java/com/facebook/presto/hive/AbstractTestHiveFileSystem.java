@@ -25,6 +25,7 @@ import com.facebook.presto.hive.datasink.OutputStreamDataSinkFactory;
 import com.facebook.presto.hive.metastore.CachingHiveMetastore;
 import com.facebook.presto.hive.metastore.Database;
 import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
+import com.facebook.presto.hive.metastore.HivePartitionMutator;
 import com.facebook.presto.hive.metastore.PrincipalPrivileges;
 import com.facebook.presto.hive.metastore.Table;
 import com.facebook.presto.hive.metastore.thrift.BridgingHiveMetastore;
@@ -93,10 +94,10 @@ import static com.facebook.presto.hive.AbstractTestHiveClient.filterNonHiddenCol
 import static com.facebook.presto.hive.AbstractTestHiveClient.filterNonHiddenColumnMetadata;
 import static com.facebook.presto.hive.AbstractTestHiveClient.getAllSplits;
 import static com.facebook.presto.hive.HiveTestUtils.FILTER_STATS_CALCULATOR_SERVICE;
+import static com.facebook.presto.hive.HiveTestUtils.FUNCTION_AND_TYPE_MANAGER;
 import static com.facebook.presto.hive.HiveTestUtils.FUNCTION_RESOLUTION;
 import static com.facebook.presto.hive.HiveTestUtils.PAGE_SORTER;
 import static com.facebook.presto.hive.HiveTestUtils.ROW_EXPRESSION_SERVICE;
-import static com.facebook.presto.hive.HiveTestUtils.TYPE_MANAGER;
 import static com.facebook.presto.hive.HiveTestUtils.getDefaultHiveBatchPageSourceFactories;
 import static com.facebook.presto.hive.HiveTestUtils.getDefaultHiveFileWriterFactories;
 import static com.facebook.presto.hive.HiveTestUtils.getDefaultHiveRecordCursorProvider;
@@ -175,13 +176,13 @@ public abstract class AbstractTestHiveFileSystem
 
         HiveCluster hiveCluster = new TestingHiveCluster(metastoreClientConfig, host, port);
         ExecutorService executor = newCachedThreadPool(daemonThreadsNamed("hive-%s"));
-        HivePartitionManager hivePartitionManager = new HivePartitionManager(TYPE_MANAGER, config);
+        HivePartitionManager hivePartitionManager = new HivePartitionManager(FUNCTION_AND_TYPE_MANAGER, config);
 
         HdfsConfiguration hdfsConfiguration = hdfsConfigurationProvider.apply(config, metastoreClientConfig);
 
         hdfsEnvironment = new HdfsEnvironment(hdfsConfiguration, metastoreClientConfig, new NoHdfsAuthentication());
         metastoreClient = new TestingHiveMetastore(
-                new BridgingHiveMetastore(new ThriftHiveMetastore(hiveCluster)),
+                new BridgingHiveMetastore(new ThriftHiveMetastore(hiveCluster), new HivePartitionMutator()),
                 executor,
                 metastoreClientConfig,
                 getBasePath(),
@@ -195,7 +196,7 @@ public abstract class AbstractTestHiveFileSystem
                 hdfsEnvironment,
                 hivePartitionManager,
                 newDirectExecutorService(),
-                TYPE_MANAGER,
+                FUNCTION_AND_TYPE_MANAGER,
                 locationService,
                 FUNCTION_RESOLUTION,
                 ROW_EXPRESSION_SERVICE,
@@ -208,7 +209,8 @@ public abstract class AbstractTestHiveFileSystem
                 new NodeVersion("test_version"),
                 new HivePartitionObjectBuilder(),
                 new HiveEncryptionInformationProvider(ImmutableList.of()),
-                new HivePartitionStats());
+                new HivePartitionStats(),
+                new HiveFileRenamer());
         transactionManager = new HiveTransactionManager();
         splitManager = new HiveSplitManager(
                 transactionManager,
@@ -216,7 +218,7 @@ public abstract class AbstractTestHiveFileSystem
                 hdfsEnvironment,
                 new CachingDirectoryLister(new HadoopDirectoryLister(), new HiveClientConfig()),
                 new BoundedExecutor(executor, config.getMaxSplitIteratorThreads()),
-                new HiveCoercionPolicy(TYPE_MANAGER),
+                new HiveCoercionPolicy(FUNCTION_AND_TYPE_MANAGER),
                 new CounterStat(),
                 config.getMaxOutstandingSplits(),
                 config.getMaxOutstandingSplitsSize(),
@@ -233,7 +235,7 @@ public abstract class AbstractTestHiveFileSystem
                 PAGE_SORTER,
                 metastoreClient,
                 new GroupByHashPageIndexerFactory(new JoinCompiler(MetadataManager.createTestMetadataManager(), new FeaturesConfig())),
-                TYPE_MANAGER,
+                FUNCTION_AND_TYPE_MANAGER,
                 config,
                 metastoreClientConfig,
                 locationService,
@@ -243,7 +245,7 @@ public abstract class AbstractTestHiveFileSystem
                 new HiveSessionProperties(config, new OrcFileWriterConfig(), new ParquetFileWriterConfig()),
                 new HiveWriterStats(),
                 getDefaultOrcFileWriterFactory(config, metastoreClientConfig));
-        pageSourceProvider = new HivePageSourceProvider(config, hdfsEnvironment, getDefaultHiveRecordCursorProvider(config, metastoreClientConfig), getDefaultHiveBatchPageSourceFactories(config, metastoreClientConfig), getDefaultHiveSelectivePageSourceFactories(config, metastoreClientConfig), TYPE_MANAGER, ROW_EXPRESSION_SERVICE);
+        pageSourceProvider = new HivePageSourceProvider(config, hdfsEnvironment, getDefaultHiveRecordCursorProvider(config, metastoreClientConfig), getDefaultHiveBatchPageSourceFactories(config, metastoreClientConfig), getDefaultHiveSelectivePageSourceFactories(config, metastoreClientConfig), FUNCTION_AND_TYPE_MANAGER, ROW_EXPRESSION_SERVICE);
     }
 
     protected ConnectorSession newSession()
@@ -377,6 +379,10 @@ public abstract class AbstractTestHiveFileSystem
             throws Exception
     {
         for (HiveStorageFormat storageFormat : HiveStorageFormat.values()) {
+            if (storageFormat == HiveStorageFormat.CSV) {
+                // CSV supports only unbounded VARCHAR type
+                continue;
+            }
             createTable(temporaryCreateTable, storageFormat);
             dropTable(temporaryCreateTable);
         }

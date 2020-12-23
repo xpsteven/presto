@@ -16,10 +16,12 @@ package com.facebook.presto.hive;
 import com.facebook.presto.Session;
 import com.facebook.presto.common.Subfield;
 import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.Range;
 import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.predicate.ValueSet;
 import com.facebook.presto.common.type.ArrayType;
 import com.facebook.presto.cost.StatsProvider;
-import com.facebook.presto.metadata.FunctionManager;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
@@ -41,6 +43,8 @@ import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.planner.plan.SemiJoinNode;
 import com.facebook.presto.sql.relational.FunctionResolution;
 import com.facebook.presto.sql.tree.FunctionCall;
+import com.facebook.presto.sql.tree.LongLiteral;
+import com.facebook.presto.sql.tree.StringLiteral;
 import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.AbstractTestQueryFramework;
 import com.facebook.presto.tests.DistributedQueryRunner;
@@ -100,6 +104,7 @@ import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.anySym
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.equiJoinClause;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.exchange;
+import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.expression;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.filter;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.globalAggregation;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.join;
@@ -226,14 +231,14 @@ public class TestHiveLogicalPlanner
         assertPlan(pushdownFilterEnabled, "SELECT linenumber FROM lineitem WHERE orderkey = 1 AND orderkey = 2 AND linenumber % 2 = 1",
                 output(values("linenumber")));
 
-        FunctionManager functionManager = getQueryRunner().getMetadata().getFunctionManager();
-        FunctionResolution functionResolution = new FunctionResolution(functionManager);
+        FunctionAndTypeManager functionAndTypeManager = getQueryRunner().getMetadata().getFunctionAndTypeManager();
+        FunctionResolution functionResolution = new FunctionResolution(functionAndTypeManager);
         RowExpression remainingPredicate = new CallExpression(EQUAL.name(),
                 functionResolution.comparisonFunction(EQUAL, BIGINT, BIGINT),
                 BOOLEAN,
                 ImmutableList.of(
                         new CallExpression("mod",
-                                functionManager.lookupFunction("mod", fromTypes(BIGINT, BIGINT)),
+                                functionAndTypeManager.lookupFunction("mod", fromTypes(BIGINT, BIGINT)),
                                 BIGINT,
                                 ImmutableList.of(
                                         new VariableReferenceExpression("orderkey", BIGINT),
@@ -296,6 +301,126 @@ public class TestHiveLogicalPlanner
         }
         finally {
             queryRunner.execute("DROP TABLE test_partition_pruning");
+        }
+    }
+
+    @Test
+    public void testOptimizeMetadataQueries()
+    {
+        QueryRunner queryRunner = getQueryRunner();
+        Session optimizeMetadataQueries = Session.builder(this.getQueryRunner().getDefaultSession())
+                .setSystemProperty(OPTIMIZE_METADATA_QUERIES, Boolean.toString(true))
+                .setCatalogSessionProperty(HIVE_CATALOG, PUSHDOWN_FILTER_ENABLED, Boolean.toString(true))
+                .build();
+
+        queryRunner.execute(
+                "CREATE TABLE test_optimize_metadata_queries WITH (partitioned_by = ARRAY['ds']) AS " +
+                        "SELECT orderkey, CAST(to_iso8601(date_add('DAY', orderkey % 7, date('2020-10-01'))) AS VARCHAR) AS ds FROM orders WHERE orderkey < 1000");
+        queryRunner.execute(
+                "CREATE TABLE test_optimize_metadata_queries_multiple_partition_columns WITH (partitioned_by = ARRAY['ds', 'value']) AS " +
+                        "SELECT orderkey, CAST(to_iso8601(date_add('DAY', orderkey % 7, date('2020-10-01'))) AS VARCHAR) AS ds, 1 AS value FROM orders WHERE orderkey < 1000");
+
+        try {
+            assertPlan(
+                    optimizeMetadataQueries,
+                    "SELECT DISTINCT ds FROM test_optimize_metadata_queries",
+                    anyTree(values(
+                            ImmutableList.of("ds"),
+                            ImmutableList.of(
+                                    ImmutableList.of(new StringLiteral("2020-10-01")),
+                                    ImmutableList.of(new StringLiteral("2020-10-02")),
+                                    ImmutableList.of(new StringLiteral("2020-10-03")),
+                                    ImmutableList.of(new StringLiteral("2020-10-04")),
+                                    ImmutableList.of(new StringLiteral("2020-10-05")),
+                                    ImmutableList.of(new StringLiteral("2020-10-06")),
+                                    ImmutableList.of(new StringLiteral("2020-10-07"))))));
+            assertPlan(
+                    optimizeMetadataQueries,
+                    "SELECT DISTINCT ds FROM test_optimize_metadata_queries WHERE ds > '2020-10-04'",
+                    anyTree(values(
+                            ImmutableList.of("ds"),
+                            ImmutableList.of(
+                                    ImmutableList.of(new StringLiteral("2020-10-05")),
+                                    ImmutableList.of(new StringLiteral("2020-10-06")),
+                                    ImmutableList.of(new StringLiteral("2020-10-07"))))));
+            assertPlan(
+                    optimizeMetadataQueries,
+                    "SELECT DISTINCT ds FROM test_optimize_metadata_queries WHERE ds = '2020-10-04' AND orderkey > 200",
+                    anyTree(tableScan(
+                            "test_optimize_metadata_queries",
+                            withColumnDomains(ImmutableMap.of("orderkey", Domain.create(ValueSet.ofRanges(Range.greaterThan(BIGINT, 200L)), false))),
+                            TRUE_CONSTANT,
+                            ImmutableSet.of("orderkey"))));
+            assertPlan(
+                    optimizeMetadataQueries,
+                    "SELECT DISTINCT ds FROM test_optimize_metadata_queries WHERE ds = '2020-10-04' AND orderkey > 200",
+                    anyTree(tableScan(
+                            "test_optimize_metadata_queries",
+                            withColumnDomains(ImmutableMap.of("orderkey", Domain.create(ValueSet.ofRanges(Range.greaterThan(BIGINT, 200L)), false))),
+                            TRUE_CONSTANT,
+                            ImmutableSet.of("orderkey"))));
+
+            assertPlan(
+                    optimizeMetadataQueries,
+                    "SELECT DISTINCT ds FROM test_optimize_metadata_queries_multiple_partition_columns",
+                    anyTree(values(
+                            ImmutableList.of("ds"),
+                            ImmutableList.of(
+                                    ImmutableList.of(new StringLiteral("2020-10-01")),
+                                    ImmutableList.of(new StringLiteral("2020-10-02")),
+                                    ImmutableList.of(new StringLiteral("2020-10-03")),
+                                    ImmutableList.of(new StringLiteral("2020-10-04")),
+                                    ImmutableList.of(new StringLiteral("2020-10-05")),
+                                    ImmutableList.of(new StringLiteral("2020-10-06")),
+                                    ImmutableList.of(new StringLiteral("2020-10-07"))))));
+            assertPlan(
+                    optimizeMetadataQueries,
+                    "SELECT DISTINCT ds FROM test_optimize_metadata_queries_multiple_partition_columns WHERE ds > '2020-10-04'",
+                    anyTree(values(
+                            ImmutableList.of("ds"),
+                            ImmutableList.of(
+                                    ImmutableList.of(new StringLiteral("2020-10-05")),
+                                    ImmutableList.of(new StringLiteral("2020-10-06")),
+                                    ImmutableList.of(new StringLiteral("2020-10-07"))))));
+            assertPlan(
+                    optimizeMetadataQueries,
+                    "SELECT DISTINCT ds FROM test_optimize_metadata_queries_multiple_partition_columns WHERE ds = '2020-10-04' AND orderkey > 200",
+                    anyTree(tableScan(
+                            "test_optimize_metadata_queries_multiple_partition_columns",
+                            withColumnDomains(ImmutableMap.of("orderkey", Domain.create(ValueSet.ofRanges(Range.greaterThan(BIGINT, 200L)), false))),
+                            TRUE_CONSTANT,
+                            ImmutableSet.of("orderkey"))));
+            assertPlan(
+                    optimizeMetadataQueries,
+                    "SELECT ds, MAX(value) FROM test_optimize_metadata_queries_multiple_partition_columns WHERE ds > '2020-10-04' GROUP BY ds",
+                    anyTree(values(
+                            ImmutableList.of("ds", "value"),
+                            ImmutableList.of(
+                                    ImmutableList.of(new StringLiteral("2020-10-05"), new LongLiteral("1")),
+                                    ImmutableList.of(new StringLiteral("2020-10-06"), new LongLiteral("1")),
+                                    ImmutableList.of(new StringLiteral("2020-10-07"), new LongLiteral("1"))))));
+            assertPlan(
+                    optimizeMetadataQueries,
+                    "SELECT MAX(ds), MAX(value) FROM test_optimize_metadata_queries_multiple_partition_columns WHERE ds > '2020-10-04'",
+                    anyTree(
+                            project(
+                                    ImmutableMap.of(
+                                            "max", expression("'2020-10-07'"),
+                                            "max_2", expression("1")),
+                                    any(values()))));
+            assertPlan(
+                    optimizeMetadataQueries,
+                    "SELECT MAX(value), MAX(ds) FROM test_optimize_metadata_queries_multiple_partition_columns WHERE ds > '2020-10-04'",
+                    anyTree(
+                            project(
+                                    ImmutableMap.of(
+                                            "max", expression("1"),
+                                            "max_2", expression("'2020-10-07'")),
+                                    any(values()))));
+        }
+        finally {
+            queryRunner.execute("DROP TABLE IF EXISTS test_optimize_metadata_queries");
+            queryRunner.execute("DROP TABLE IF EXISTS test_optimize_metadata_queries_multiple_partition_columns");
         }
     }
 
@@ -1021,6 +1146,14 @@ public class TestHiveLogicalPlanner
                                         withColumnDomains(ImmutableMap.of(pushdownColumnNameForSubfield(nestedColumn("x.a")), create(ofRanges(greaterThan(BIGINT, 10L)), false))),
                                         ImmutableSet.of(pushdownColumnNameForSubfield(nestedColumn("x.a"))),
                                         TRUE_CONSTANT)))));
+
+        // Self-Join and Table scan assignments
+        assertPlan(withParquetDereferencePushDownEnabled(), "SELECT t1.x.a, t2.x.a FROM test_pushdown_nestedcolumn_parquet t1, test_pushdown_nestedcolumn_parquet t2 where t1.id = t2.id",
+                anyTree(
+                        node(JoinNode.class,
+                                anyTree(tableScanParquetDeferencePushDowns("test_pushdown_nestedcolumn_parquet", nestedColumnMap("x.a"))),
+                                anyTree(tableScanParquetDeferencePushDowns("test_pushdown_nestedcolumn_parquet", nestedColumnMap("x_1.a"))))));
+
         // Aggregation
         assertParquetDereferencePushDown("SELECT id, min(x.a) FROM test_pushdown_nestedcolumn_parquet GROUP BY 1",
                 "test_pushdown_nestedcolumn_parquet",

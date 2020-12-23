@@ -16,12 +16,12 @@ package com.facebook.presto.hive;
 import com.facebook.airlift.log.Logger;
 import com.facebook.airlift.log.Logging;
 import com.facebook.presto.Session;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.execution.QueryManagerConfig.ExchangeMaterializationStrategy;
 import com.facebook.presto.hive.TestHiveEventListenerPlugin.TestingHiveEventListenerPlugin;
 import com.facebook.presto.hive.authentication.NoHdfsAuthentication;
 import com.facebook.presto.hive.metastore.Database;
 import com.facebook.presto.hive.metastore.file.FileHiveMetastore;
-import com.facebook.presto.metadata.QualifiedObjectName;
 import com.facebook.presto.spi.security.Identity;
 import com.facebook.presto.spi.security.PrincipalType;
 import com.facebook.presto.spi.security.SelectedRole;
@@ -38,6 +38,7 @@ import org.joda.time.DateTimeZone;
 import java.io.File;
 import java.net.URI;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.BiFunction;
@@ -46,7 +47,7 @@ import static com.facebook.airlift.log.Level.ERROR;
 import static com.facebook.airlift.log.Level.WARN;
 import static com.facebook.presto.SystemSessionProperties.COLOCATED_JOIN;
 import static com.facebook.presto.SystemSessionProperties.EXCHANGE_MATERIALIZATION_STRATEGY;
-import static com.facebook.presto.SystemSessionProperties.GROUPED_EXECUTION_FOR_AGGREGATION;
+import static com.facebook.presto.SystemSessionProperties.GROUPED_EXECUTION;
 import static com.facebook.presto.SystemSessionProperties.HASH_PARTITION_COUNT;
 import static com.facebook.presto.SystemSessionProperties.PARTITIONING_PROVIDER_CATALOG;
 import static com.facebook.presto.spi.security.SelectedRole.Type.ROLE;
@@ -214,7 +215,28 @@ public final class HiveQueryRunner
                         "query.exchange-materialization-strategy", "ALL",
                         "query.hash-partition-count", "11",
                         "colocated-joins-enabled", "true",
-                        "grouped-execution-for-aggregation-enabled", "true"),
+                        "grouped-execution-enabled", "true"),
+                Optional.empty());
+    }
+
+    public static DistributedQueryRunner createMaterializingAndSpillingQueryRunner(Iterable<TpchTable<?>> tables)
+            throws Exception
+    {
+        return createQueryRunner(
+                tables,
+                ImmutableMap.<String, String>builder()
+                        .put("query.partitioning-provider-catalog", "hive")
+                        .put("query.exchange-materialization-strategy", "ALL")
+                        .put("query.hash-partition-count", "11")
+                        .put("colocated-joins-enabled", "true")
+                        .put("grouped-execution-enabled", "true")
+                        .put("experimental.spill-enabled", "true")
+                        .put("experimental.join-spill-enabled", "true")
+                        .put("experimental.spiller-spill-path", Paths.get(System.getProperty("java.io.tmpdir"), "presto", "spills").toString())
+                        .put("experimental.spiller-max-used-space-threshold", "1.0")
+                        .put("experimental.memory-revoking-threshold", "0.0") // revoke always
+                        .put("experimental.memory-revoking-target", "0.0")
+                        .build(),
                 Optional.empty());
     }
 
@@ -285,7 +307,7 @@ public final class HiveQueryRunner
                 .setSystemProperty(EXCHANGE_MATERIALIZATION_STRATEGY, ExchangeMaterializationStrategy.ALL.toString())
                 .setSystemProperty(HASH_PARTITION_COUNT, "13")
                 .setSystemProperty(COLOCATED_JOIN, "true")
-                .setSystemProperty(GROUPED_EXECUTION_FOR_AGGREGATION, "true")
+                .setSystemProperty(GROUPED_EXECUTION, "true")
                 .setCatalog(HIVE_CATALOG)
                 .setSchema(TPCH_SCHEMA)
                 .build();

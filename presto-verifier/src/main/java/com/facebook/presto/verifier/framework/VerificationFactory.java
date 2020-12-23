@@ -86,9 +86,11 @@ public class VerificationFactory
                     sqlParser);
         }
 
-        switch (queryType.getCategory()) {
-            case DATA_PRODUCING:
-                QueryRewriter queryRewriter = queryRewriterFactory.create(queryActions.getHelperAction());
+        QueryRewriter queryRewriter = queryRewriterFactory.create(queryActions.getHelperAction());
+        switch (queryType) {
+            case CREATE_TABLE_AS_SELECT:
+            case INSERT:
+            case QUERY:
                 DeterminismAnalyzer determinismAnalyzer = new DeterminismAnalyzer(
                         sourceQuery,
                         queryActions.getHelperAction(),
@@ -108,6 +110,24 @@ public class VerificationFactory
                         verifierConfig,
                         typeManager,
                         checksumValidator);
+            case CREATE_VIEW:
+                return new CreateViewVerification(
+                        sqlParser,
+                        queryActions,
+                        sourceQuery,
+                        queryRewriter,
+                        exceptionClassifier,
+                        verificationContext,
+                        verifierConfig);
+            case CREATE_TABLE:
+                return new CreateTableVerification(
+                        sqlParser,
+                        queryActions,
+                        sourceQuery,
+                        queryRewriter,
+                        exceptionClassifier,
+                        verificationContext,
+                        verifierConfig);
             default:
                 throw new IllegalStateException(format("Unsupported query type: %s", queryType));
         }

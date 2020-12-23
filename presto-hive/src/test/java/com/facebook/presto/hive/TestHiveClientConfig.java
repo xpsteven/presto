@@ -128,6 +128,7 @@ public class TestHiveClientConfig
                 .setTemporaryTableSchema("default")
                 .setTemporaryTableStorageFormat(ORC)
                 .setTemporaryTableCompressionCodec(SNAPPY)
+                .setUsePageFileForHiveUnsupportedType(true)
                 .setPushdownFilterEnabled(false)
                 .setZstdJniDecompressionEnabled(false)
                 .setRangeFiltersOnSubscriptsEnabled(false)
@@ -143,7 +144,10 @@ public class TestHiveClientConfig
                 .setIgnoreUnreadablePartition(false)
                 .setMaxMetadataUpdaterThreads(100)
                 .setPartialAggregationPushdownEnabled(false)
-                .setPartialAggregationPushdownForVariableLengthDatatypesEnabled(false));
+                .setPartialAggregationPushdownForVariableLengthDatatypesEnabled(false)
+                .setFileRenamingEnabled(false)
+                .setPreferManifestsToListFiles(false)
+                .setManifestVerificationEnabled(false));
     }
 
     @Test
@@ -232,6 +236,7 @@ public class TestHiveClientConfig
                 .put("hive.temporary-table-schema", "other")
                 .put("hive.temporary-table-storage-format", "DWRF")
                 .put("hive.temporary-table-compression-codec", "NONE")
+                .put("hive.use-pagefile-for-hive-unsupported-type", "false")
                 .put("hive.pushdown-filter-enabled", "true")
                 .put("hive.range-filters-on-subscripts-enabled", "true")
                 .put("hive.adaptive-filter-reordering-enabled", "false")
@@ -248,6 +253,9 @@ public class TestHiveClientConfig
                 .put("hive.max-metadata-updater-threads", "1000")
                 .put("hive.partial_aggregation_pushdown_enabled", "true")
                 .put("hive.partial_aggregation_pushdown_for_variable_length_datatypes_enabled", "true")
+                .put("hive.file_renaming_enabled", "true")
+                .put("hive.prefer-manifests-to-list-files", "true")
+                .put("hive.manifest-verification-enabled", "true")
                 .build();
 
         HiveClientConfig expected = new HiveClientConfig()
@@ -334,6 +342,7 @@ public class TestHiveClientConfig
                 .setTemporaryTableSchema("other")
                 .setTemporaryTableStorageFormat(DWRF)
                 .setTemporaryTableCompressionCodec(NONE)
+                .setUsePageFileForHiveUnsupportedType(false)
                 .setPushdownFilterEnabled(true)
                 .setZstdJniDecompressionEnabled(true)
                 .setRangeFiltersOnSubscriptsEnabled(true)
@@ -349,7 +358,10 @@ public class TestHiveClientConfig
                 .setIgnoreUnreadablePartition(true)
                 .setMaxMetadataUpdaterThreads(1000)
                 .setPartialAggregationPushdownEnabled(true)
-                .setPartialAggregationPushdownForVariableLengthDatatypesEnabled(true);
+                .setPartialAggregationPushdownForVariableLengthDatatypesEnabled(true)
+                .setFileRenamingEnabled(true)
+                .setPreferManifestsToListFiles(true)
+                .setManifestVerificationEnabled(true);
 
         ConfigAssertions.assertFullMapping(properties, expected);
     }

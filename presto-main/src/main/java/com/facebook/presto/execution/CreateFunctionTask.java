@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.execution;
 
-import com.facebook.presto.common.function.QualifiedFunctionName;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeSignature;
 import com.facebook.presto.metadata.Metadata;
@@ -42,7 +42,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
-import static com.facebook.presto.metadata.FunctionManager.qualifyFunctionName;
+import static com.facebook.presto.metadata.FunctionAndTypeManager.qualifyObjectName;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.sql.SqlFormatter.formatSql;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -82,13 +82,13 @@ public class CreateFunctionTask
             throw new PrestoException(NOT_SUPPORTED, "Invoking a dynamically registered function in SQL function body is not supported");
         }
 
-        metadata.getFunctionManager().createFunction(createSqlInvokedFunction(statement, metadata, analysis), statement.isReplace());
+        metadata.getFunctionAndTypeManager().createFunction(createSqlInvokedFunction(statement, metadata, analysis), statement.isReplace());
         return immediateFuture(null);
     }
 
     private SqlInvokedFunction createSqlInvokedFunction(CreateFunction statement, Metadata metadata, Analysis analysis)
     {
-        QualifiedFunctionName functionName = qualifyFunctionName(statement.getFunctionName());
+        QualifiedObjectName functionName = qualifyObjectName(statement.getFunctionName());
         List<Parameter> parameters = statement.getParameters().stream()
                 .map(parameter -> new Parameter(parameter.getName().toString(), parseTypeSignature(parameter.getType())))
                 .collect(toImmutableList());

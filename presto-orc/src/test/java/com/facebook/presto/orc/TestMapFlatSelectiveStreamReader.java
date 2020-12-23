@@ -65,7 +65,7 @@ import static com.facebook.presto.orc.TestingOrcPredicate.createOrcPredicate;
 import static com.facebook.presto.orc.TupleDomainFilter.IS_NOT_NULL;
 import static com.facebook.presto.orc.TupleDomainFilter.IS_NULL;
 import static com.facebook.presto.orc.TupleDomainFilterUtils.toBigintValues;
-import static com.facebook.presto.testing.TestingEnvironment.TYPE_MANAGER;
+import static com.facebook.presto.testing.TestingEnvironment.FUNCTION_AND_TYPE_MANAGER;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.io.Resources.getResource;
@@ -75,7 +75,7 @@ public class TestMapFlatSelectiveStreamReader
 {
     // TODO: Add tests for timestamp as value type
 
-    private static final Type STRUCT_TYPE = TYPE_MANAGER.getParameterizedType(
+    private static final Type STRUCT_TYPE = FUNCTION_AND_TYPE_MANAGER.getParameterizedType(
             StandardTypes.ROW,
             ImmutableList.of(
                     TypeSignatureParameter.of(new NamedTypeSignature(Optional.of(new RowFieldName("value1", false)), IntegerType.INTEGER.getTypeSignature())),
@@ -335,6 +335,17 @@ public class TestMapFlatSelectiveStreamReader
                 ExpectedValuesBuilder.get(Function.identity()).setEmptyMapsFrequency(ALL));
     }
 
+    // All maps are empty and encoding is not present
+    @Test
+    public void testWithAllEmptyMapsWithNoEncoding()
+            throws Exception
+    {
+        runTest(
+                "test_flat_map/flat_map_all_empty_maps_no_encoding.dwrf",
+                INTEGER,
+                ExpectedValuesBuilder.get(Function.identity()).setEmptyMapsFrequency(ALL));
+    }
+
     @Test
     public void testMixedEncodings()
             throws Exception
@@ -358,6 +369,16 @@ public class TestMapFlatSelectiveStreamReader
         runTest("test_flat_map/flat_map_int_missing_sequences.dwrf",
                 INTEGER,
                 ExpectedValuesBuilder.get(Function.identity()).setMissingSequences());
+    }
+
+    @Test
+    public void testIntegerWithMissingSequence0()
+            throws Exception
+    {
+        // A test case where the (dummy) encoding for sequence 0 of the value node doesn't exist
+        runTest("test_flat_map/flat_map_int_missing_sequence_0.dwrf",
+                IntegerType.INTEGER,
+                ExpectedValuesBuilder.get(Function.identity()));
     }
 
     private <K, V> void runTest(String testOrcFileName, Type type, ExpectedValuesBuilder<K, V> expectedValuesBuilder)

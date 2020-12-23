@@ -59,7 +59,10 @@ public class PrestoSparkRunner
                 distribution.getPackageSupplier(),
                 distribution.getConfigProperties(),
                 distribution.getCatalogProperties(),
-                distribution.getEventListenerProperties());
+                distribution.getEventListenerProperties(),
+                distribution.getAccessControlProperties(),
+                distribution.getSessionPropertyConfigurationProperties(),
+                distribution.getFunctionNamespaceProperties());
     }
 
     public void run(
@@ -148,11 +151,21 @@ public class PrestoSparkRunner
             PackageSupplier packageSupplier,
             Map<String, String> configProperties,
             Map<String, Map<String, String>> catalogProperties,
-            Optional<Map<String, String>> eventListenerProperties)
+            Optional<Map<String, String>> eventListenerProperties,
+            Optional<Map<String, String>> accessControlProperties,
+            Optional<Map<String, String>> sessionPropertyConfigurationProperties,
+            Optional<Map<String, Map<String, String>>> functionNamespaceProperties)
     {
         String packagePath = getPackagePath(packageSupplier);
         File pluginsDirectory = checkDirectory(new File(packagePath, "plugin"));
-        PrestoSparkConfiguration configuration = new PrestoSparkConfiguration(configProperties, pluginsDirectory.getAbsolutePath(), catalogProperties, eventListenerProperties);
+        PrestoSparkConfiguration configuration = new PrestoSparkConfiguration(
+                configProperties,
+                pluginsDirectory.getAbsolutePath(),
+                catalogProperties,
+                eventListenerProperties,
+                accessControlProperties,
+                sessionPropertyConfigurationProperties,
+                functionNamespaceProperties);
         IPrestoSparkServiceFactory serviceFactory = createServiceFactory(checkDirectory(new File(packagePath, "lib")));
         return serviceFactory.createService(sparkProcessType, configuration);
     }
@@ -169,6 +182,9 @@ public class PrestoSparkRunner
         private final Map<String, String> configProperties;
         private final Map<String, Map<String, String>> catalogProperties;
         private final Map<String, String> eventListenerProperties;
+        private final Map<String, String> accessControlProperties;
+        private final Map<String, String> sessionPropertyConfigurationProperties;
+        private final Map<String, Map<String, String>> functionNamespaceProperties;
 
         public DistributionBasedPrestoSparkTaskExecutorFactoryProvider(PrestoSparkDistribution distribution)
         {
@@ -178,6 +194,9 @@ public class PrestoSparkRunner
             this.catalogProperties = distribution.getCatalogProperties();
             // Optional is not Serializable
             this.eventListenerProperties = distribution.getEventListenerProperties().orElse(null);
+            this.accessControlProperties = distribution.getAccessControlProperties().orElse(null);
+            this.sessionPropertyConfigurationProperties = distribution.getSessionPropertyConfigurationProperties().orElse(null);
+            this.functionNamespaceProperties = distribution.getFunctionNamespaceProperties().orElse(null);
         }
 
         @Override
@@ -193,21 +212,43 @@ public class PrestoSparkRunner
         private static Map<String, String> currentConfigProperties;
         private static Map<String, Map<String, String>> currentCatalogProperties;
         private static Map<String, String> currentEventListenerProperties;
+        private static Map<String, String> currentAccessControlProperties;
+        private static Map<String, String> currentSessionPropertyConfigurationProperties;
+        private static Map<String, Map<String, String>> currentFunctionNamespaceProperties;
 
         private IPrestoSparkService getOrCreatePrestoSparkService()
         {
             synchronized (DistributionBasedPrestoSparkTaskExecutorFactoryProvider.class) {
                 if (service == null) {
-                    service = createService(SparkProcessType.EXECUTOR, packageSupplier, configProperties, catalogProperties, Optional.ofNullable(eventListenerProperties));
+                    service = createService(
+                            SparkProcessType.EXECUTOR,
+                            packageSupplier,
+                            configProperties,
+                            catalogProperties,
+                            Optional.ofNullable(eventListenerProperties),
+                            Optional.ofNullable(accessControlProperties),
+                            Optional.ofNullable(sessionPropertyConfigurationProperties),
+                            Optional.ofNullable(functionNamespaceProperties));
+
                     currentPackagePath = getPackagePath(packageSupplier);
                     currentConfigProperties = configProperties;
                     currentCatalogProperties = catalogProperties;
                     currentEventListenerProperties = eventListenerProperties;
+                    currentAccessControlProperties = accessControlProperties;
+                    currentSessionPropertyConfigurationProperties = sessionPropertyConfigurationProperties;
+                    currentFunctionNamespaceProperties = functionNamespaceProperties;
                 }
-                checkEquals("packagePath", currentPackagePath, getPackagePath(packageSupplier));
-                checkEquals("configProperties", currentConfigProperties, configProperties);
-                checkEquals("catalogProperties", currentCatalogProperties, catalogProperties);
-                checkEquals("eventListenerProperties", currentEventListenerProperties, eventListenerProperties);
+                else {
+                    checkEquals("packagePath", currentPackagePath, getPackagePath(packageSupplier));
+                    checkEquals("configProperties", currentConfigProperties, configProperties);
+                    checkEquals("catalogProperties", currentCatalogProperties, catalogProperties);
+                    checkEquals("eventListenerProperties", currentEventListenerProperties, eventListenerProperties);
+                    checkEquals("accessControlProperties", currentAccessControlProperties, accessControlProperties);
+                    checkEquals("sessionPropertyConfigurationProperties",
+                            currentSessionPropertyConfigurationProperties,
+                            sessionPropertyConfigurationProperties);
+                    checkEquals("functionNamespaceProperties", currentFunctionNamespaceProperties, functionNamespaceProperties);
+                }
                 return service;
             }
         }

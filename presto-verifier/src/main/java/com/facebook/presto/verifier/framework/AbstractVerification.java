@@ -87,8 +87,7 @@ public abstract class AbstractVerification<B extends QueryBundle, R extends Matc
             SqlExceptionClassifier exceptionClassifier,
             VerificationContext verificationContext,
             Optional<ResultSetConverter<V>> mainQueryResultSetConverter,
-            VerifierConfig verifierConfig,
-            boolean skipControl)
+            VerifierConfig verifierConfig)
     {
         this.queryActions = requireNonNull(queryActions, "queryActions is null");
         this.sourceQuery = requireNonNull(sourceQuery, "sourceQuery is null");
@@ -101,7 +100,7 @@ public abstract class AbstractVerification<B extends QueryBundle, R extends Matc
         this.verificationResubmissionLimit = verifierConfig.getVerificationResubmissionLimit();
         this.setupOnMainClusters = verifierConfig.isSetupOnMainClusters();
         this.teardownOnMainClusters = verifierConfig.isTeardownOnMainClusters();
-        this.skipControl = skipControl;
+        this.skipControl = verifierConfig.isSkipControl();
     }
 
     protected abstract B getQueryRewrite(ClusterType clusterType);
@@ -123,7 +122,7 @@ public abstract class AbstractVerification<B extends QueryBundle, R extends Matc
             Optional<R> matchResult,
             Optional<Throwable> throwable);
 
-    protected abstract void updateQueryInfo(QueryInfo.Builder queryInfo, Optional<QueryResult<V>> queryResult);
+    protected void updateQueryInfo(QueryInfo.Builder queryInfo, Optional<QueryResult<V>> queryResult) {}
 
     protected PrestoAction getHelperAction()
     {
@@ -357,7 +356,7 @@ public abstract class AbstractVerification<B extends QueryBundle, R extends Matc
             QueryContext queryContext,
             Optional<QueryResult<V>> queryResult)
     {
-        QueryInfo.Builder queryInfo = QueryInfo.builder(configuration.getCatalog(), configuration.getSchema(), originalQuery)
+        QueryInfo.Builder queryInfo = QueryInfo.builder(configuration.getCatalog(), configuration.getSchema(), originalQuery, configuration.getSessionProperties())
                 .setSetupQueryIds(queryContext.getSetupQueryIds())
                 .setTeardownQueryIds(queryContext.getTeardownQueryIds())
                 .setChecksumQueryId(checksumQueryContext.getChecksumQueryId())

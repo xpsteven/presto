@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.spi.api.Experimental;
 import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.AbstractTestQueryFramework;
@@ -27,7 +28,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Optional;
+import java.util.UUID;
 
+import static com.facebook.presto.hive.HiveQueryRunner.HIVE_CATALOG;
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.airlift.tpch.TpchTable.NATION;
 import static java.lang.String.format;
@@ -74,11 +77,10 @@ public class TestHiveExternalWorkersQueries
 
         defaultQueryRunner.close();
 
-        Path tempDirectoryPath = Files.createTempDirectory(TestHiveExternalWorkersQueries.class.getSimpleName());
-
         // Make query runner with external workers for tests
         DistributedQueryRunner queryRunner = HiveQueryRunner.createQueryRunner(ImmutableList.of(),
-                ImmutableMap.of("optimizer.optimize-hash-generation", "false"),
+                ImmutableMap.of("optimizer.optimize-hash-generation", "false",
+                        "parse-decimal-literals-as-double", "true"),
                 ImmutableMap.of(),
                 "sql-standard",
                 ImmutableMap.of(),
@@ -86,11 +88,23 @@ public class TestHiveExternalWorkersQueries
                 baseDataDir,
                 Optional.of((workerIndex, discoveryUri) -> {
                     try {
-                        if (workerIndex == 0) {
-                            // Write discovery URL to /tmp/config.properties
-                            Files.write(tempDirectoryPath.resolve("config.properties"),
-                                    format("discovery.uri=%s\n", discoveryUri).getBytes());
-                        }
+                        Path tempDirectoryPath = Files.createTempDirectory(TestHiveExternalWorkersQueries.class.getSimpleName());
+                        int port = 1234 + workerIndex;
+
+                        // Write config files
+                        Files.write(tempDirectoryPath.resolve("config.properties"),
+                                format("discovery.uri=%s\n" +
+                                        "presto.version=testversion\n" +
+                                        "http-server.http.port=%d", discoveryUri, port).getBytes());
+                        Files.write(tempDirectoryPath.resolve("node.properties"),
+                                format("node.id=%s\n" +
+                                        "node.ip=127.0.0.1\n" +
+                                        "node.environment=testing", UUID.randomUUID()).getBytes());
+
+                        Path catalogDirectoryPath = tempDirectoryPath.resolve("catalog");
+                        Files.createDirectory(catalogDirectoryPath);
+                        Files.write(catalogDirectoryPath.resolve("hive.properties"), "connector.name=hive".getBytes());
+
                         return new ProcessBuilder(prestoServerPath.get(), "--logtostderr=1", "--v=1")
                                 .directory(tempDirectoryPath.toFile())
                                 .redirectErrorStream(true)
@@ -137,8 +151,36 @@ public class TestHiveExternalWorkersQueries
         assertQuery("SELECT * FROM nation WHERE nationkey <= 4");
         assertQuery("SELECT * FROM nation WHERE nationkey > 4");
         assertQuery("SELECT * FROM nation WHERE nationkey >= 4");
+        assertQuery("SELECT * FROM nation WHERE nationkey BETWEEN 3 AND 7");
         assertQuery("SELECT nationkey * 10, nationkey % 5, -nationkey, nationkey / 3 FROM nation");
         assertQuery("SELECT *, nationkey / 3 FROM nation");
+
+        assertQuery("SELECT rand() < 1, random() < 1 FROM nation", "SELECT true, true FROM nation");
+        assertQuery("SELECT ceil(discount), ceiling(discount), floor(discount), abs(discount) FROM lineitem");
+        assertQuery("SELECT substr(comment, 1, 10), length(comment) FROM orders");
+    }
+
+    @Test
+    public void testFilterPushdown()
+    {
+        Session filterPushdown = Session.builder(getSession())
+                .setCatalogSessionProperty(HIVE_CATALOG, "pushdown_filter_enabled", "true")
+                .build();
+
+        assertQuery(filterPushdown, "SELECT * FROM nation WHERE nationkey = 4");
+        assertQuery(filterPushdown, "SELECT * FROM nation WHERE nationkey <> 4");
+        assertQuery(filterPushdown, "SELECT * FROM nation WHERE nationkey < 4");
+        assertQuery(filterPushdown, "SELECT * FROM nation WHERE nationkey <= 4");
+        assertQuery(filterPushdown, "SELECT * FROM nation WHERE nationkey > 4");
+        assertQuery(filterPushdown, "SELECT * FROM nation WHERE nationkey >= 4");
+        assertQuery(filterPushdown, "SELECT * FROM nation WHERE nationkey BETWEEN 3 AND 7");
+        assertQuery(filterPushdown, "SELECT * FROM nation WHERE nationkey IN (1, 3, 5)");
+
+        assertQuery(filterPushdown, "SELECT linenumber, orderkey, discount FROM lineitem WHERE discount > 0.02");
+        assertQuery(filterPushdown, "SELECT linenumber, orderkey, discount FROM lineitem WHERE discount BETWEEN 0.01 AND 0.02");
+
+        // no row passes the filter
+        assertQuery(filterPushdown, "SELECT linenumber, orderkey, discount FROM lineitem WHERE discount > 0.2");
     }
 
     @Test
@@ -154,5 +196,36 @@ public class TestHiveExternalWorkersQueries
         assertQuery("SELECT orderpriority, sum(totalprice) FROM orders GROUP BY orderpriority");
 
         assertQuery("SELECT custkey, min(totalprice), max(orderkey) FROM orders GROUP BY custkey");
+    }
+
+    @Test
+    public void testTopN()
+    {
+        assertQuery("SELECT nationkey, regionkey FROM nation ORDER BY nationkey LIMIT 5");
+
+        assertQuery("SELECT nationkey, regionkey FROM nation ORDER BY nationkey LIMIT 50");
+
+        assertQuery("SELECT orderkey, partkey, suppkey, linenumber, quantity, extendedprice, discount, tax " +
+                "FROM lineitem ORDER BY orderkey, linenumber DESC LIMIT 10");
+
+        assertQuery("SELECT orderkey, partkey, suppkey, linenumber, quantity, extendedprice, discount, tax " +
+                "FROM lineitem ORDER BY orderkey, linenumber DESC LIMIT 2000");
+    }
+
+    @Test
+    public void testCast()
+    {
+        // TODO Fix cast double-to-varchar and boolean-to-varchar.
+        //  cast(0.0 as varchar) should return "0.0", not "0".
+        //  cast(bool as varchar) should return "TRUE" or "FALSE", not "true" or "false".
+        assertQuery("SELECT CAST(linenumber as TINYINT), CAST(linenumber AS SMALLINT), " +
+                "CAST(linenumber AS INTEGER), CAST(linenumber AS BIGINT), CAST(quantity AS REAL), " +
+                "CAST(orderkey AS DOUBLE), CAST(orderkey AS VARCHAR) FROM lineitem");
+    }
+
+    @Test
+    public void testValues()
+    {
+        assertQuery("SELECT 1, 0.24, ceil(4.5), 'A not too short ASCII string'");
     }
 }

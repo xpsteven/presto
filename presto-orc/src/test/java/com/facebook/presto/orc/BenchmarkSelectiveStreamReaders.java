@@ -31,7 +31,6 @@ import com.facebook.presto.orc.TupleDomainFilter.BytesRange;
 import com.facebook.presto.orc.TupleDomainFilter.DoubleRange;
 import com.facebook.presto.orc.TupleDomainFilter.FloatRange;
 import com.facebook.presto.orc.cache.StorageOrcFileTailSource;
-import com.facebook.presto.type.TypeRegistry;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -79,6 +78,7 @@ import static com.facebook.presto.common.type.RealType.REAL;
 import static com.facebook.presto.common.type.SmallintType.SMALLINT;
 import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
 import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.metadata.FunctionAndTypeManager.createTestFunctionAndTypeManager;
 import static com.facebook.presto.orc.DwrfEncryptionProvider.NO_ENCRYPTION;
 import static com.facebook.presto.orc.NoopOrcAggregatedMemoryContext.NOOP_ORC_AGGREGATED_MEMORY_CONTEXT;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
@@ -100,7 +100,7 @@ import static org.joda.time.DateTimeZone.UTC;
 
 @SuppressWarnings("MethodMayBeStatic")
 @State(Scope.Thread)
-@OutputTimeUnit(TimeUnit.SECONDS)
+@OutputTimeUnit(TimeUnit.MILLISECONDS)
 @Fork(2)
 @Warmup(iterations = 10, time = 1000, timeUnit = MILLISECONDS)
 @Measurement(iterations = 10, time = 1000, timeUnit = MILLISECONDS)
@@ -216,6 +216,19 @@ public class BenchmarkSelectiveStreamReaders
                 "0.8|-1",
                 "0.9|-1",
                 "1|-1",
+                "0|0.5",
+                "0.1|0.5",
+                "0.2|0.5",
+                "0.3|0.5",
+                "0.4|0.5",
+                "0.5|0.5",
+                "0.6|0.5",
+                "0.7|0.5",
+                "0.8|0.5",
+                "0.9|0.5",
+                "1|0.5",
+                "-1|-1",
+                "1|1",
         })
         private String filterRateSignature = "0.1|-1";
 
@@ -228,10 +241,10 @@ public class BenchmarkSelectiveStreamReaders
                 type = VarcharType.createVarcharType(9);
             }
             else if (typeSignature.startsWith("varchar")) {
-                type = new TypeRegistry().getType(TypeSignature.parseTypeSignature("varchar"));
+                type = createTestFunctionAndTypeManager().getType(TypeSignature.parseTypeSignature("varchar"));
             }
             else {
-                type = new TypeRegistry().getType(TypeSignature.parseTypeSignature(typeSignature));
+                type = createTestFunctionAndTypeManager().getType(TypeSignature.parseTypeSignature(typeSignature));
             }
 
             temporaryDirectory = createTempDir();
@@ -275,7 +288,8 @@ public class BenchmarkSelectiveStreamReaders
                     NOOP_ORC_AGGREGATED_MEMORY_CONTEXT,
                     OrcReaderTestingUtils.createDefaultTestConfig(),
                     false,
-                    NO_ENCRYPTION);
+                    NO_ENCRYPTION,
+                    DwrfKeyProvider.EMPTY);
 
             return orcReader.createSelectiveRecordReader(
                     IntStream.range(0, channelCount).boxed().collect(Collectors.toMap(Function.identity(), i -> type)),
@@ -295,8 +309,7 @@ public class BenchmarkSelectiveStreamReaders
                     true,
                     new TestingHiveOrcAggregatedMemoryContext(),
                     Optional.empty(),
-                    INITIAL_BATCH_SIZE,
-                    ImmutableMap.of());
+                    INITIAL_BATCH_SIZE);
         }
 
         private Optional<TupleDomainFilter> getFilter(Type type, float filterRate, boolean filterAllowNull, float selectionRateForNonNull)

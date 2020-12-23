@@ -103,13 +103,4 @@ public class SimpleHttpResponseHandler<T>
         stats.updateFailure();
         callback.failed(t);
     }
-
-    private static class ServiceUnavailableException
-            extends RuntimeException
-    {
-        public ServiceUnavailableException(URI uri)
-        {
-            super("Server returned SERVICE_UNAVAILABLE: " + uri);
-        }
-    }
 }

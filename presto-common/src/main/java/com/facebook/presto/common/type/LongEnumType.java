@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.common.type;
 
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.common.block.Block;
 import com.facebook.presto.common.function.SqlFunctionProperties;
 import com.fasterxml.jackson.annotation.JsonCreator;
@@ -21,12 +22,15 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.Comparator;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.common.type.TypeUtils.normalizeEnumMap;
 import static com.facebook.presto.common.type.TypeUtils.validateEnumMap;
 import static java.lang.String.format;
+import static java.util.stream.Collectors.toMap;
 
 public class LongEnumType
         extends AbstractLongType
@@ -34,7 +38,7 @@ public class LongEnumType
 {
     private final LongEnumMap enumMap;
 
-    public LongEnumType(String name, LongEnumMap enumMap)
+    public LongEnumType(QualifiedObjectName name, LongEnumMap enumMap)
     {
         super(new TypeSignature(name, TypeSignatureParameter.of(enumMap)));
         this.enumMap = enumMap;
@@ -44,6 +48,12 @@ public class LongEnumType
     public Map<String, Long> getEnumMap()
     {
         return enumMap.getEnumMap();
+    }
+
+    @Override
+    public Optional<String> getEnumKeyForValue(Long value)
+    {
+        return enumMap.getKeyForValue(value);
     }
 
     @Override
@@ -71,18 +81,30 @@ public class LongEnumType
     public static class LongEnumMap
     {
         private final Map<String, Long> enumMap;
+        private Map<Long, String> flippedEnumMap;
+        private final AtomicBoolean isFlippedEnumComputed = new AtomicBoolean();
 
         @JsonCreator
         public LongEnumMap(@JsonProperty("enumMap") Map<String, Long> enumMap)
         {
             validateEnumMap(enumMap);
             this.enumMap = normalizeEnumMap(enumMap);
+            this.flippedEnumMap = null;
         }
 
         @JsonProperty
         public Map<String, Long> getEnumMap()
         {
             return enumMap;
+        }
+
+        public Optional<String> getKeyForValue(Long value)
+        {
+            if (!isFlippedEnumComputed.getAndSet(true)) {
+                this.flippedEnumMap = this.enumMap.entrySet().stream()
+                        .collect(toMap(Map.Entry::getValue, Map.Entry::getKey));
+            }
+            return Optional.ofNullable(flippedEnumMap.get(value));
         }
 
         @Override
@@ -117,5 +139,27 @@ public class LongEnumType
         {
             return Objects.hash(enumMap);
         }
+    }
+
+    @Override
+    public int hashCode()
+    {
+        return Objects.hash(getTypeSignature().getBase(), enumMap);
+    }
+
+    @Override
+    public boolean equals(Object o)
+    {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+
+        LongEnumType other = (LongEnumType) o;
+
+        return Objects.equals(getTypeSignature().getBase(), other.getTypeSignature().getBase())
+                && Objects.equals(getEnumMap(), other.getEnumMap());
     }
 }

@@ -94,6 +94,7 @@ public final class HiveSessionProperties
     private static final String TEMPORARY_TABLE_SCHEMA = "temporary_table_schema";
     private static final String TEMPORARY_TABLE_STORAGE_FORMAT = "temporary_table_storage_format";
     private static final String TEMPORARY_TABLE_COMPRESSION_CODEC = "temporary_table_compression_codec";
+    private static final String USE_PAGEFILE_FOR_HIVE_UNSUPPORTED_TYPE = "use_pagefile_for_hive_unsupported_type";
     public static final String PUSHDOWN_FILTER_ENABLED = "pushdown_filter_enabled";
     public static final String RANGE_FILTERS_ON_SUBSCRIPTS_ENABLED = "range_filters_on_subscripts_enabled";
     public static final String ADAPTIVE_FILTER_REORDERING_ENABLED = "adaptive_filter_reordering_enabled";
@@ -109,6 +110,9 @@ public final class HiveSessionProperties
     public static final String IGNORE_UNREADABLE_PARTITION = "ignore_unreadable_partition";
     public static final String PARTIAL_AGGREGATION_PUSHDOWN_ENABLED = "partial_aggregation_pushdown_enabled";
     public static final String PARTIAL_AGGREGATION_PUSHDOWN_FOR_VARIABLE_LENGTH_DATATYPES_ENABLED = "partial_aggregation_pushdown_for_variable_length_datatypes_enabled";
+    public static final String FILE_RENAMING_ENABLED = "file_renaming_enabled";
+    public static final String PREFER_MANIFESTS_TO_LIST_FILES = "prefer_manifests_to_list_files";
+    public static final String MANIFEST_VERIFICATION_ENABLED = "manifest_verification_enabled";
 
     private final List<PropertyMetadata<?>> sessionProperties;
 
@@ -416,6 +420,11 @@ public final class HiveSessionProperties
                         value -> HiveCompressionCodec.valueOf(((String) value).toUpperCase()),
                         HiveCompressionCodec::name),
                 booleanProperty(
+                        USE_PAGEFILE_FOR_HIVE_UNSUPPORTED_TYPE,
+                        "Automatically switch to PAGEFILE format for materialized exchange when encountering unsupported types",
+                        hiveClientConfig.getUsePageFileForHiveUnsupportedType(),
+                        true),
+                booleanProperty(
                         PUSHDOWN_FILTER_ENABLED,
                         "Experimental: enable complex filter pushdown",
                         hiveClientConfig.isPushdownFilterEnabled(),
@@ -508,6 +517,21 @@ public final class HiveSessionProperties
                         PARTIAL_AGGREGATION_PUSHDOWN_FOR_VARIABLE_LENGTH_DATATYPES_ENABLED,
                         "Is partial aggregation pushdown enabled for variable length datatypes",
                         hiveClientConfig.isPartialAggregationPushdownForVariableLengthDatatypesEnabled(),
+                        false),
+                booleanProperty(
+                        FILE_RENAMING_ENABLED,
+                        "Enable renaming the files written by writers",
+                        hiveClientConfig.isFileRenamingEnabled(),
+                        false),
+                booleanProperty(
+                        PREFER_MANIFESTS_TO_LIST_FILES,
+                        "Prefer to fetch the list of file names and sizes from manifest",
+                        hiveClientConfig.isPreferManifestsToListFiles(),
+                        false),
+                booleanProperty(
+                        MANIFEST_VERIFICATION_ENABLED,
+                        "Enable manifest verification",
+                        hiveClientConfig.isManifestVerificationEnabled(),
                         false));
     }
 
@@ -783,6 +807,11 @@ public final class HiveSessionProperties
         return session.getProperty(TEMPORARY_TABLE_COMPRESSION_CODEC, HiveCompressionCodec.class);
     }
 
+    public static boolean isUsePageFileForHiveUnsupportedType(ConnectorSession session)
+    {
+        return session.getProperty(USE_PAGEFILE_FOR_HIVE_UNSUPPORTED_TYPE, Boolean.class);
+    }
+
     public static boolean isPushdownFilterEnabled(ConnectorSession session)
     {
         return session.getProperty(PUSHDOWN_FILTER_ENABLED, Boolean.class);
@@ -887,5 +916,20 @@ public final class HiveSessionProperties
     public static boolean isPartialAggregationPushdownForVariableLengthDatatypesEnabled(ConnectorSession session)
     {
         return session.getProperty(PARTIAL_AGGREGATION_PUSHDOWN_FOR_VARIABLE_LENGTH_DATATYPES_ENABLED, Boolean.class);
+    }
+
+    public static boolean isFileRenamingEnabled(ConnectorSession session)
+    {
+        return session.getProperty(FILE_RENAMING_ENABLED, Boolean.class);
+    }
+
+    public static boolean isPreferManifestsToListFiles(ConnectorSession session)
+    {
+        return session.getProperty(PREFER_MANIFESTS_TO_LIST_FILES, Boolean.class);
+    }
+
+    public static boolean isManifestVerificationEnabled(ConnectorSession session)
+    {
+        return session.getProperty(MANIFEST_VERIFICATION_ENABLED, Boolean.class);
     }
 }

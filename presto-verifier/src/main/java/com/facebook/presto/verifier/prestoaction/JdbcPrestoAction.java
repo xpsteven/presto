@@ -45,7 +45,6 @@ import java.util.function.Consumer;
 
 import static com.facebook.presto.sql.SqlFormatter.formatSql;
 import static com.facebook.presto.verifier.prestoaction.QueryActionUtil.mangleSessionProperties;
-import static com.google.common.collect.Iterators.cycle;
 import static java.util.Objects.requireNonNull;
 
 public class JdbcPrestoAction
@@ -57,13 +56,15 @@ public class JdbcPrestoAction
     private final SqlExceptionClassifier exceptionClassifier;
     private final QueryConfiguration queryConfiguration;
     private final VerificationContext verificationContext;
+    private final Iterator<String> jdbcUrlSelector;
 
-    private final Iterator<String> jdbcUrls;
     private final Duration queryTimeout;
     private final Duration metadataTimeout;
     private final Duration checksumTimeout;
     private final String testId;
     private final Optional<String> testName;
+    private final String applicationName;
+    private final boolean removeMemoryRelatedSessionProperties;
 
     private final RetryDriver<QueryException> networkRetry;
     private final RetryDriver<QueryException> prestoRetry;
@@ -72,6 +73,7 @@ public class JdbcPrestoAction
             SqlExceptionClassifier exceptionClassifier,
             QueryConfiguration queryConfiguration,
             VerificationContext verificationContext,
+            Iterator<String> jdbcUrlSelector,
             PrestoActionConfig prestoActionConfig,
             Duration metadataTimeout,
             Duration checksumTimeout,
@@ -82,9 +84,11 @@ public class JdbcPrestoAction
         this.exceptionClassifier = requireNonNull(exceptionClassifier, "exceptionClassifier is null");
         this.queryConfiguration = requireNonNull(queryConfiguration, "queryConfiguration is null");
         this.verificationContext = requireNonNull(verificationContext, "verificationContext is null");
+        this.jdbcUrlSelector = requireNonNull(jdbcUrlSelector, "jdbcUrlSelector is null");
 
-        this.jdbcUrls = requireNonNull(cycle(prestoActionConfig.getJdbcUrls()), "jdbcUrls is null");
         this.queryTimeout = requireNonNull(prestoActionConfig.getQueryTimeout(), "queryTimeout is null");
+        this.applicationName = requireNonNull(prestoActionConfig.getApplicationName(), "applicationName is null");
+        this.removeMemoryRelatedSessionProperties = prestoActionConfig.isRemoveMemoryRelatedSessionProperties();
         this.metadataTimeout = requireNonNull(metadataTimeout, "metadataTimeout is null");
         this.checksumTimeout = requireNonNull(checksumTimeout, "checksumTimeout is null");
         this.testId = requireNonNull(verifierConfig.getTestId(), "testId is null");
@@ -148,13 +152,13 @@ public class JdbcPrestoAction
             throws SQLException
     {
         PrestoConnection connection = DriverManager.getConnection(
-                jdbcUrls.next(),
+                jdbcUrlSelector.next(),
                 queryConfiguration.getUsername().orElse(null),
                 queryConfiguration.getPassword().orElse(null))
                 .unwrap(PrestoConnection.class);
 
         try {
-            connection.setClientInfo("ApplicationName", "verifier-test");
+            connection.setClientInfo("ApplicationName", applicationName);
             connection.setClientInfo("ClientInfo", clientInfo);
             connection.setCatalog(queryConfiguration.getCatalog());
             connection.setSchema(queryConfiguration.getSchema());
@@ -163,7 +167,11 @@ public class JdbcPrestoAction
             // Do nothing
         }
 
-        Map<String, String> sessionProperties = mangleSessionProperties(queryConfiguration.getSessionProperties(), queryStage, getTimeout(queryStage));
+        Map<String, String> sessionProperties = mangleSessionProperties(
+                queryConfiguration.getSessionProperties(),
+                queryStage,
+                getTimeout(queryStage),
+                removeMemoryRelatedSessionProperties);
         for (Entry<String, String> entry : sessionProperties.entrySet()) {
             connection.setSessionProperty(entry.getKey(), entry.getValue());
         }

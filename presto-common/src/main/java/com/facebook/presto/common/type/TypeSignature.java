@@ -13,8 +13,10 @@
  */
 package com.facebook.presto.common.type;
 
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.common.type.LongEnumType.LongEnumMap;
 import com.facebook.presto.common.type.VarcharEnumType.VarcharEnumMap;
+import com.facebook.presto.common.type.encoding.Base32;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 
@@ -28,6 +30,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -39,7 +42,7 @@ import static java.util.Locale.ENGLISH;
 
 public class TypeSignature
 {
-    private final String base;
+    private final TypeSignatureBase base;
     private final List<TypeSignatureParameter> parameters;
     private final boolean calculated;
 
@@ -51,6 +54,7 @@ public class TypeSignature
 
     private static final String LONG_ENUM_PREFIX = "enum:bigint";
     private static final String VARCHAR_ENUM_PREFIX = "enum:varchar";
+    private static final Pattern ENUM_PREFIX = Pattern.compile("enum:(bigint|varchar)\\{");
 
     static {
         BASE_NAME_ALIAS_TO_CANONICAL.put("int", StandardTypes.INTEGER);
@@ -62,6 +66,16 @@ public class TypeSignature
         SIMPLE_TYPE_WITH_SPACES.add("double precision");
     }
 
+    public TypeSignature(QualifiedObjectName base, TypeSignatureParameter... parameters)
+    {
+        this(base, asList(parameters));
+    }
+
+    public TypeSignature(QualifiedObjectName base, List<TypeSignatureParameter> parameters)
+    {
+        this(TypeSignatureBase.of(base), parameters);
+    }
+
     public TypeSignature(String base, TypeSignatureParameter... parameters)
     {
         this(base, asList(parameters));
@@ -69,19 +83,26 @@ public class TypeSignature
 
     public TypeSignature(String base, List<TypeSignatureParameter> parameters)
     {
-        checkArgument(base != null, "base is null");
+        this(TypeSignatureBase.of(base), parameters);
+    }
+
+    private TypeSignature(TypeSignatureBase base, List<TypeSignatureParameter> parameters)
+    {
         this.base = base;
-        checkArgument(!base.isEmpty(), "base is empty");
-        checkArgument(validateName(base), "Bad characters in base type: %s", base);
         checkArgument(parameters != null, "parameters is null");
         this.parameters = unmodifiableList(new ArrayList<>(parameters));
 
         this.calculated = parameters.stream().anyMatch(TypeSignatureParameter::isCalculated);
     }
 
-    public String getBase()
+    public TypeSignatureBase getTypeSignatureBase()
     {
         return base;
+    }
+
+    public String getBase()
+    {
+        return base.toString();
     }
 
     public List<TypeSignatureParameter> getParameters()
@@ -137,9 +158,12 @@ public class TypeSignature
             checkArgument(!literalCalculationParameters.contains(signature), "Bad type signature: '%s'", signature);
             return new TypeSignature(canonicalizeBaseName(signature), new ArrayList<>());
         }
-        if (signature.toLowerCase(ENGLISH).startsWith(StandardTypes.ROW + "(")) {
+        String lowerCaseSignature = signature.toLowerCase(ENGLISH);
+        if (lowerCaseSignature.startsWith(StandardTypes.ROW + "(")) {
             return parseRowTypeSignature(signature, literalCalculationParameters);
         }
+
+        Set<Integer> enumMapStartIndices = findEnumMapStartIndices(lowerCaseSignature);
 
         String baseName = null;
         List<TypeSignatureParameter> parameters = new ArrayList<>();
@@ -170,20 +194,20 @@ public class TypeSignature
                 checkArgument(bracketCount >= 0, "Bad type signature: '%s'", signature);
                 if (bracketCount == 0) {
                     checkArgument(parameterStart >= 0, "Bad type signature: '%s'", signature);
-                    parameters.add(parseTypeSignatureParameter(signature, parameterStart, i, literalCalculationParameters));
+                    parameters.add(parseTypeSignatureParameter(signature, parameterStart, i, literalCalculationParameters, enumMapStartIndices));
                     parameterStart = i + 1;
                     if (i == signature.length() - 1) {
                         return new TypeSignature(baseName, parameters);
                     }
                 }
             }
-            else if (isEnumMapStart(signature, i)) {
+            else if (enumMapStartIndices.contains(i)) {
                 parameterEnd = parseEnumMap(signature, i).mapEndIndex;
             }
             else if (c == ',') {
                 if (bracketCount == 1) {
                     checkArgument(parameterStart >= 0, "Bad type signature: '%s'", signature);
-                    parameters.add(parseTypeSignatureParameter(signature, parameterStart, i, literalCalculationParameters));
+                    parameters.add(parseTypeSignatureParameter(signature, parameterStart, i, literalCalculationParameters, enumMapStartIndices));
                     parameterStart = i + 1;
                 }
             }
@@ -216,14 +240,21 @@ public class TypeSignature
         VarcharEnumMap getVarcharEnumMap()
         {
             checkArgument(!isLongEnum, "Invalid enum map format");
-            return new VarcharEnumMap(map);
+            // Varchar enum values are base32-encoded so that they are case-insensitive, which is expected of TypeSigntures
+            Base32 base32 = new Base32();
+            return new VarcharEnumMap(map.entrySet().stream()
+                    .collect(Collectors.toMap(Map.Entry::getKey, e -> new String(base32.decode(e.getValue().toUpperCase(ENGLISH))))));
         }
     }
 
-    private static boolean isEnumMapStart(String signature, int startIndex)
+    private static Set<Integer> findEnumMapStartIndices(String signature)
     {
-        String suffix = signature.substring(startIndex).toLowerCase(ENGLISH);
-        return suffix.startsWith(LONG_ENUM_PREFIX + "{") || suffix.startsWith(VARCHAR_ENUM_PREFIX + "{");
+        Set<Integer> indices = new HashSet<>();
+        Matcher enumMatcher = ENUM_PREFIX.matcher(signature);
+        while (enumMatcher.find()) {
+            indices.add(enumMatcher.start());
+        }
+        return indices;
     }
 
     private enum EnumMapParsingState
@@ -465,7 +496,8 @@ public class TypeSignature
             String signature,
             int begin,
             int end,
-            Set<String> literalCalculationParameters)
+            Set<String> literalCalculationParameters,
+            Set<Integer> enumStartIndices)
     {
         String parameterName = signature.substring(begin, end).trim();
         if (isDigit(signature.charAt(begin))) {
@@ -474,7 +506,7 @@ public class TypeSignature
         else if (literalCalculationParameters.contains(parameterName)) {
             return TypeSignatureParameter.of(parameterName);
         }
-        else if (isEnumMapStart(signature, begin)) {
+        else if (enumStartIndices.contains(begin)) {
             if (!parameterName.endsWith("}")) {
                 throw new IllegalStateException("Cannot parse enum signature");
             }
@@ -502,18 +534,19 @@ public class TypeSignature
     @JsonValue
     public String toString()
     {
+        String baseString = base.toString();
         if (parameters.isEmpty()) {
-            return base;
+            return baseString;
         }
 
-        if (base.equalsIgnoreCase(StandardTypes.VARCHAR) &&
+        if (baseString.equalsIgnoreCase(StandardTypes.VARCHAR) &&
                 (parameters.size() == 1) &&
                 parameters.get(0).isLongLiteral() &&
                 parameters.get(0).getLongLiteral() == VarcharType.UNBOUNDED_LENGTH) {
-            return base;
+            return baseString;
         }
 
-        StringBuilder typeName = new StringBuilder(base);
+        StringBuilder typeName = new StringBuilder(baseString);
         typeName.append("(").append(parameters.get(0));
         for (int i = 1; i < parameters.size(); i++) {
             typeName.append(",").append(parameters.get(i));
@@ -534,11 +567,6 @@ public class TypeSignature
         if (!argument) {
             throw new AssertionError(message);
         }
-    }
-
-    private static boolean validateName(String name)
-    {
-        return name.chars().noneMatch(c -> c == '<' || c == '>' || c == ',');
     }
 
     private static String canonicalizeBaseName(String baseName)
@@ -562,13 +590,13 @@ public class TypeSignature
 
         TypeSignature other = (TypeSignature) o;
 
-        return Objects.equals(this.base.toLowerCase(ENGLISH), other.base.toLowerCase(ENGLISH)) &&
+        return Objects.equals(this.base, other.base) &&
                 Objects.equals(this.parameters, other.parameters);
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(base.toLowerCase(ENGLISH), parameters);
+        return Objects.hash(base, parameters);
     }
 }

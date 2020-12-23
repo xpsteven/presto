@@ -449,6 +449,17 @@ public abstract class AbstractTestQueries
     }
 
     @Test
+    public void testMapTransformKeys()
+    {
+        assertQuery(
+                "SELECT\n" +
+                        "   MAP_KEYS(TRANSFORM_KEYS(features, (k, v) -> MAP(ARRAY[1, 2], ARRAY[10, 20])[k])) as k1, \n" +
+                        "   MAP_KEYS(TRANSFORM_KEYS(features, (k, v) -> MAP(ARRAY[1, 2], ARRAY[30, 40])[k])) as k2 \n" +
+                        "FROM (SELECT MAP(ARRAY[1], ARRAY[1]) as features) ",
+                "VALUES ((10), (30))");
+    }
+
+    @Test
     public void testTryMapTransformValueFunction()
     {
         // MaterializedResult#Builder doesn't support null row. Coalesce null value to empty map for comparison.
@@ -4600,6 +4611,8 @@ public abstract class AbstractTestQueries
         assertAccessAllowed("SELECT name AS my_alias FROM nation", privilege("my_alias", SELECT_COLUMN));
         assertAccessAllowed("SELECT my_alias from (SELECT name AS my_alias FROM nation)", privilege("my_alias", SELECT_COLUMN));
         assertAccessDenied("SELECT name AS my_alias FROM nation", "Cannot select from columns \\[name\\] in table .*.nation.*", privilege("name", SELECT_COLUMN));
+        assertAccessDenied("SELECT nation.name FROM nation JOIN region USING (regionkey)", "Cannot select from columns \\[regionkey, name\\] in table .*", privilege("regionkey", SELECT_COLUMN));
+        assertAccessDenied("SELECT array_agg(regionkey ORDER BY regionkey) FROM nation JOIN region USING (regionkey)", "Cannot select from columns \\[regionkey\\] in table .*", privilege("regionkey", SELECT_COLUMN));
     }
 
     @Test
@@ -5343,5 +5356,109 @@ public abstract class AbstractTestQueries
         assertQuery(
                 "SELECT array_sum(zip_with(a, b, (x, y) -> x * y)), array_sum(zip_with(a, b, (x, y) -> x * y)) + array_sum(zip_with(a, a, (x, y) -> x * y)) FROM (VALUES (ARRAY[1, 2, 3], ARRAY[1, 0, 0])) t(a, b)",
                 "SELECT 1, 15");
+    }
+
+    @Test
+    public void testDistinctFrom()
+    {
+        assertQuery(
+                "SELECT x IS DISTINCT FROM NULL FROM (SELECT CAST(NULL AS VARCHAR)) T(x)",
+                "SELECT FALSE");
+        assertQuery(
+                "SELECT NULL IS DISTINCT FROM x FROM (SELECT CAST(NULL AS VARCHAR)) T(x)",
+                "SELECT FALSE");
+        assertQuery(
+                "SELECT x IS DISTINCT FROM NULL FROM (SELECT CAST('something' AS VARCHAR)) T(x)",
+                "SELECT TRUE");
+        assertQuery(
+                "SELECT NULL IS DISTINCT FROM x FROM (SELECT CAST('something' AS VARCHAR)) T(x)",
+                "SELECT TRUE");
+        assertQuery(
+                "SELECT R.name IS DISTINCT FROM NULL FROM nation N LEFT OUTER JOIN region R ON N.regionkey = R.regionkey AND R.regionkey = 2 WHERE N.name='GERMANY'",
+                "SELECT FALSE");
+        assertQuery(
+                "SELECT NULL IS DISTINCT FROM R.name FROM nation N LEFT OUTER JOIN region R ON N.regionkey = R.regionkey AND R.regionkey = 2 WHERE N.name='KENYA'",
+                "SELECT FALSE");
+        assertQuery(
+                "SELECT NULL IS DISTINCT FROM R.name FROM nation N LEFT OUTER JOIN region R ON N.regionkey = R.regionkey AND R.regionkey = 2 WHERE N.name='KENYA'",
+                "SELECT FALSE");
+        assertQuery(
+                "SELECT NULL IS DISTINCT FROM R.name FROM nation N LEFT OUTER JOIN region R ON N.regionkey = R.regionkey AND R.regionkey = 2 WHERE N.name='KENYA'",
+                "SELECT FALSE");
+        assertQuery(
+                "SELECT NULL IS DISTINCT FROM R.name FROM nation N LEFT OUTER JOIN region R ON N.regionkey = R.regionkey AND R.regionkey = 2 WHERE N.name='INDIA'",
+                "SELECT TRUE");
+        assertQuery(
+                "SELECT NULL IS DISTINCT FROM R.name FROM nation N LEFT OUTER JOIN region R ON N.regionkey = R.regionkey AND R.regionkey = 2 WHERE N.name='JAPAN'",
+                "SELECT TRUE");
+    }
+
+    @Test
+    public void testDereference()
+    {
+        assertQuery(
+                "select cast(row(row(row(random(10), if(random(10) >= 0, 2)), random(10)), random(100)) AS row(x row(y row(a int, b int), c int), d int)).x.y.b",
+                "select 2");
+        assertQuery(
+                "select cast(row(row(row(random(10), if(random(10) < 0, 2)), random(10)), random(100)) AS row(x row(y row(a int, b int), c int), d int)).x.y.b",
+                "select null");
+        assertQuery(
+                "select cast(row(row(null, random(10)), random(100)) AS row(x row(y row(a int, b int), c int), d int)).x.y.b",
+                "select null");
+        assertQuery(
+                "select cast(row(row(null, if(random(100) >= 0, 4)), random(10)) AS row(x row(y row(a int, b int), c int), d int)).x.c",
+                "select 4");
+    }
+
+    @Test
+    public void testApproxMostFrequentWithLong()
+    {
+        MaterializedResult actual1 = computeActual("SELECT approx_most_frequent(3, cast(x as bigint), 15) FROM (values 1, 2, 1, 3, 1, 2, 3, 4, 5) t(x)");
+        assertEquals(actual1.getRowCount(), 1);
+        assertEquals(actual1.getMaterializedRows().get(0).getFields().get(0), ImmutableMap.of(1L, 3L, 2L, 2L, 3L, 2L));
+
+        MaterializedResult actual2 = computeActual("SELECT approx_most_frequent(2, cast(x as bigint), 15) FROM (values 1, 2, 1, 3, 1, 2, 3, 4, 5) t(x)");
+        assertEquals(actual2.getRowCount(), 1);
+        assertEquals(actual2.getMaterializedRows().get(0).getFields().get(0), ImmutableMap.of(1L, 3L, 2L, 2L));
+    }
+
+    @Test
+    public void testApproxMostFrequentWithVarchar()
+    {
+        MaterializedResult actual1 = computeActual("SELECT approx_most_frequent(3, x, 15) FROM (values 'A', 'B', 'A', 'C', 'A', 'B', 'C', 'D', 'E') t(x)");
+        assertEquals(actual1.getRowCount(), 1);
+        assertEquals(actual1.getMaterializedRows().get(0).getFields().get(0), ImmutableMap.of("A", 3L, "B", 2L, "C", 2L));
+
+        MaterializedResult actual2 = computeActual("SELECT approx_most_frequent(2, x, 15) FROM (values 'A', 'B', 'A', 'C', 'A', 'B', 'C', 'D', 'E') t(x)");
+        assertEquals(actual2.getRowCount(), 1);
+        assertEquals(actual2.getMaterializedRows().get(0).getFields().get(0), ImmutableMap.of("A", 3L, "B", 2L));
+    }
+
+    @Test
+    public void testApproxMostFrequentWithLongGroupBy()
+    {
+        MaterializedResult actual1 = computeActual("SELECT k, approx_most_frequent(3, cast(v as bigint), 15) FROM (values ('a', 1), ('b', 2), ('a', 1), ('c', 3), ('a', 1), ('b', 2), ('c', 3), ('a', 4), ('b', 5)) t(k, v) GROUP BY 1 ORDER BY 1");
+
+        assertEquals(actual1.getRowCount(), 3);
+        assertEquals(actual1.getMaterializedRows().get(0).getFields().get(0), "a");
+        assertEquals(actual1.getMaterializedRows().get(0).getFields().get(1), ImmutableMap.of(1L, 3L, 4L, 1L));
+        assertEquals(actual1.getMaterializedRows().get(1).getFields().get(0), "b");
+        assertEquals(actual1.getMaterializedRows().get(1).getFields().get(1), ImmutableMap.of(2L, 2L, 5L, 1L));
+        assertEquals(actual1.getMaterializedRows().get(2).getFields().get(0), "c");
+        assertEquals(actual1.getMaterializedRows().get(2).getFields().get(1), ImmutableMap.of(3L, 2L));
+    }
+
+    @Test
+    public void testApproxMostFrequentWithStringGroupBy()
+    {
+        MaterializedResult actual1 = computeActual("SELECT k, approx_most_frequent(3, v, 15) FROM (values ('a', 'A'), ('b', 'B'), ('a', 'A'), ('c', 'C'), ('a', 'A'), ('b', 'B'), ('c', 'C'), ('a', 'D'), ('b', 'E')) t(k, v) GROUP BY 1 ORDER BY 1");
+
+        assertEquals(actual1.getRowCount(), 3);
+        assertEquals(actual1.getMaterializedRows().get(0).getFields().get(0), "a");
+        assertEquals(actual1.getMaterializedRows().get(0).getFields().get(1), ImmutableMap.of("A", 3L, "D", 1L));
+        assertEquals(actual1.getMaterializedRows().get(1).getFields().get(0), "b");
+        assertEquals(actual1.getMaterializedRows().get(1).getFields().get(1), ImmutableMap.of("B", 2L, "E", 1L));
+        assertEquals(actual1.getMaterializedRows().get(2).getFields().get(0), "c");
+        assertEquals(actual1.getMaterializedRows().get(2).getFields().get(1), ImmutableMap.of("C", 2L));
     }
 }

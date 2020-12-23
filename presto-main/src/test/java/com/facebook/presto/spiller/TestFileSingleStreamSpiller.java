@@ -22,7 +22,6 @@ import com.facebook.presto.operator.PageAssertions;
 import com.facebook.presto.spi.page.PageCodecMarker;
 import com.facebook.presto.spi.page.PagesSerdeUtil;
 import com.facebook.presto.spi.page.SerializedPage;
-import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterators;
 import com.google.common.io.Files;
@@ -101,14 +100,14 @@ public class TestFileSingleStreamSpiller
         File spillPath = new File(tempDirectory, UUID.randomUUID().toString());
         FileSingleStreamSpillerFactory spillerFactory = new FileSingleStreamSpillerFactory(
                 executor, // executor won't be closed, because we don't call destroy() on the spiller factory
-                new BlockEncodingManager(new TypeRegistry()),
+                new BlockEncodingManager(),
                 new SpillerStats(),
                 ImmutableList.of(spillPath.toPath()),
                 1.0,
                 compression,
                 encryption);
         LocalMemoryContext memoryContext = newSimpleAggregatedMemoryContext().newLocalMemoryContext("test");
-        SingleStreamSpiller singleStreamSpiller = spillerFactory.create(TYPES, bytes -> {}, memoryContext);
+        SingleStreamSpiller singleStreamSpiller = spillerFactory.create(TYPES, new TestingSpillContext(), memoryContext);
         assertTrue(singleStreamSpiller instanceof FileSingleStreamSpiller);
         FileSingleStreamSpiller spiller = (FileSingleStreamSpiller) singleStreamSpiller;
 

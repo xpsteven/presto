@@ -40,9 +40,11 @@ import com.facebook.presto.hive.LocationService.WriteInfo;
 import com.facebook.presto.hive.authentication.NoHdfsAuthentication;
 import com.facebook.presto.hive.datasink.OutputStreamDataSinkFactory;
 import com.facebook.presto.hive.metastore.CachingHiveMetastore;
+import com.facebook.presto.hive.metastore.CachingHiveMetastore.MetastoreCacheScope;
 import com.facebook.presto.hive.metastore.Column;
 import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
 import com.facebook.presto.hive.metastore.HiveColumnStatistics;
+import com.facebook.presto.hive.metastore.HivePartitionMutator;
 import com.facebook.presto.hive.metastore.HivePrivilegeInfo;
 import com.facebook.presto.hive.metastore.HivePrivilegeInfo.HivePrivilege;
 import com.facebook.presto.hive.metastore.Partition;
@@ -211,6 +213,7 @@ import static com.facebook.presto.hive.HiveMetadata.convertToPredicate;
 import static com.facebook.presto.hive.HiveSessionProperties.OFFLINE_DATA_DEBUG_MODE_ENABLED;
 import static com.facebook.presto.hive.HiveSessionProperties.SORTED_WRITE_TO_TEMP_PATH_ENABLED;
 import static com.facebook.presto.hive.HiveStorageFormat.AVRO;
+import static com.facebook.presto.hive.HiveStorageFormat.CSV;
 import static com.facebook.presto.hive.HiveStorageFormat.DWRF;
 import static com.facebook.presto.hive.HiveStorageFormat.JSON;
 import static com.facebook.presto.hive.HiveStorageFormat.ORC;
@@ -226,12 +229,12 @@ import static com.facebook.presto.hive.HiveTableProperties.PARTITIONED_BY_PROPER
 import static com.facebook.presto.hive.HiveTableProperties.SORTED_BY_PROPERTY;
 import static com.facebook.presto.hive.HiveTableProperties.STORAGE_FORMAT_PROPERTY;
 import static com.facebook.presto.hive.HiveTestUtils.FILTER_STATS_CALCULATOR_SERVICE;
+import static com.facebook.presto.hive.HiveTestUtils.FUNCTION_AND_TYPE_MANAGER;
 import static com.facebook.presto.hive.HiveTestUtils.FUNCTION_RESOLUTION;
 import static com.facebook.presto.hive.HiveTestUtils.METADATA;
 import static com.facebook.presto.hive.HiveTestUtils.PAGE_SORTER;
 import static com.facebook.presto.hive.HiveTestUtils.ROW_EXPRESSION_SERVICE;
 import static com.facebook.presto.hive.HiveTestUtils.SESSION;
-import static com.facebook.presto.hive.HiveTestUtils.TYPE_MANAGER;
 import static com.facebook.presto.hive.HiveTestUtils.arrayType;
 import static com.facebook.presto.hive.HiveTestUtils.getDefaultHiveBatchPageSourceFactories;
 import static com.facebook.presto.hive.HiveTestUtils.getDefaultHiveFileWriterFactories;
@@ -554,7 +557,10 @@ public abstract class AbstractTestHiveClient
             row -> row.getField(0) != null && (short) row.getField(0) + 1 > 0,
             row -> row.getField(0) != null && (short) row.getField(0) + 1 < 0);
 
-    protected Set<HiveStorageFormat> createTableFormats = difference(ImmutableSet.copyOf(HiveStorageFormat.values()), ImmutableSet.of(AVRO));
+    protected Set<HiveStorageFormat> createTableFormats = difference(
+            ImmutableSet.copyOf(HiveStorageFormat.values()),
+            // exclude formats that change table schema with serde
+            ImmutableSet.of(AVRO, CSV));
 
     private static final JoinCompiler JOIN_COMPILER = new JoinCompiler(MetadataManager.createTestMetadataManager(), new FeaturesConfig());
 
@@ -907,11 +913,13 @@ public abstract class AbstractTestHiveClient
 
         HiveCluster hiveCluster = new TestingHiveCluster(metastoreClientConfig, host, port);
         ExtendedHiveMetastore metastore = new CachingHiveMetastore(
-                new BridgingHiveMetastore(new ThriftHiveMetastore(hiveCluster)),
+                new BridgingHiveMetastore(new ThriftHiveMetastore(hiveCluster), new HivePartitionMutator()),
                 executor,
                 Duration.valueOf("1m"),
                 Duration.valueOf("15s"),
-                10000);
+                10000,
+                false,
+                MetastoreCacheScope.ALL);
 
         setup(databaseName, hiveClientConfig, cacheConfig, metastoreClientConfig, metastore);
     }
@@ -922,7 +930,7 @@ public abstract class AbstractTestHiveClient
 
         setupHive(connectorId.toString(), databaseName, hiveClientConfig.getTimeZone());
 
-        hivePartitionManager = new HivePartitionManager(TYPE_MANAGER, hiveClientConfig);
+        hivePartitionManager = new HivePartitionManager(FUNCTION_AND_TYPE_MANAGER, hiveClientConfig);
         metastoreClient = hiveMetastore;
         HdfsConfiguration hdfsConfiguration = new HiveHdfsConfiguration(new HdfsConfigurationInitializer(hiveClientConfig, metastoreClientConfig), ImmutableSet.of());
         hdfsEnvironment = new HdfsEnvironment(hdfsConfiguration, metastoreClientConfig, new NoHdfsAuthentication());
@@ -939,7 +947,7 @@ public abstract class AbstractTestHiveClient
                 true,
                 getHiveClientConfig().getMaxPartitionBatchSize(),
                 getHiveClientConfig().getMaxPartitionsPerScan(),
-                TYPE_MANAGER,
+                FUNCTION_AND_TYPE_MANAGER,
                 locationService,
                 FUNCTION_RESOLUTION,
                 ROW_EXPRESSION_SERVICE,
@@ -953,7 +961,8 @@ public abstract class AbstractTestHiveClient
                 TEST_SERVER_VERSION,
                 new HivePartitionObjectBuilder(),
                 new HiveEncryptionInformationProvider(ImmutableList.of()),
-                new HivePartitionStats());
+                new HivePartitionStats(),
+                new HiveFileRenamer());
         transactionManager = new HiveTransactionManager();
         encryptionInformationProvider = new HiveEncryptionInformationProvider(ImmutableList.of());
         splitManager = new HiveSplitManager(
@@ -962,7 +971,7 @@ public abstract class AbstractTestHiveClient
                 hdfsEnvironment,
                 new CachingDirectoryLister(new HadoopDirectoryLister(), new HiveClientConfig()),
                 directExecutor(),
-                new HiveCoercionPolicy(TYPE_MANAGER),
+                new HiveCoercionPolicy(FUNCTION_AND_TYPE_MANAGER),
                 new CounterStat(),
                 100,
                 hiveClientConfig.getMaxOutstandingSplitsSize(),
@@ -979,7 +988,7 @@ public abstract class AbstractTestHiveClient
                 PAGE_SORTER,
                 metastoreClient,
                 new GroupByHashPageIndexerFactory(JOIN_COMPILER),
-                TYPE_MANAGER,
+                FUNCTION_AND_TYPE_MANAGER,
                 getHiveClientConfig(),
                 getMetastoreClientConfig(),
                 locationService,
@@ -989,7 +998,7 @@ public abstract class AbstractTestHiveClient
                 new HiveSessionProperties(hiveClientConfig, new OrcFileWriterConfig(), new ParquetFileWriterConfig()),
                 new HiveWriterStats(),
                 getDefaultOrcFileWriterFactory(hiveClientConfig, metastoreClientConfig));
-        pageSourceProvider = new HivePageSourceProvider(hiveClientConfig, hdfsEnvironment, getDefaultHiveRecordCursorProvider(hiveClientConfig, metastoreClientConfig), getDefaultHiveBatchPageSourceFactories(hiveClientConfig, metastoreClientConfig), getDefaultHiveSelectivePageSourceFactories(hiveClientConfig, metastoreClientConfig), TYPE_MANAGER, ROW_EXPRESSION_SERVICE);
+        pageSourceProvider = new HivePageSourceProvider(hiveClientConfig, hdfsEnvironment, getDefaultHiveRecordCursorProvider(hiveClientConfig, metastoreClientConfig), getDefaultHiveBatchPageSourceFactories(hiveClientConfig, metastoreClientConfig), getDefaultHiveSelectivePageSourceFactories(hiveClientConfig, metastoreClientConfig), FUNCTION_AND_TYPE_MANAGER, ROW_EXPRESSION_SERVICE);
     }
 
     /**
@@ -1085,6 +1094,12 @@ public abstract class AbstractTestHiveClient
                 }
 
                 return session.getProperty(name, type);
+            }
+
+            @Override
+            public Optional<String> getSchema()
+            {
+                return Optional.empty();
             }
         };
     }
@@ -1403,7 +1418,7 @@ public abstract class AbstractTestHiveClient
                         ROW_EXPRESSION_SERVICE,
                         FUNCTION_RESOLUTION,
                         hivePartitionManager,
-                        METADATA.getFunctionManager(),
+                        METADATA.getFunctionAndTypeManager(),
                         tableHandle,
                         predicate,
                         Optional.empty()).getLayout().getHandle();
@@ -2157,7 +2172,7 @@ public abstract class AbstractTestHiveClient
                         ROW_EXPRESSION_SERVICE,
                         FUNCTION_RESOLUTION,
                         hivePartitionManager,
-                        METADATA.getFunctionManager(),
+                        METADATA.getFunctionAndTypeManager(),
                         tableHandle,
                         predicate,
                         Optional.empty()).getLayout().getHandle();
@@ -2487,7 +2502,7 @@ public abstract class AbstractTestHiveClient
                     ROW_EXPRESSION_SERVICE,
                     FUNCTION_RESOLUTION,
                     hivePartitionManager,
-                    METADATA.getFunctionManager(),
+                    METADATA.getFunctionAndTypeManager(),
                     tableHandle,
                     TRUE_CONSTANT,
                     Optional.empty()).getLayout();
@@ -3653,6 +3668,45 @@ public abstract class AbstractTestHiveClient
             Table table = metastore.getTable(schemaTableName.getSchemaName(), schemaTableName.getTableName()).get();
             LocationHandle handle = locationService.forExistingTable(metastore, session, table, false);
             return locationService.getPartitionWriteInfo(handle, Optional.empty(), partitionName).getTargetPath().toString();
+        }
+    }
+
+    @Test
+    public void testAddColumn()
+            throws Exception
+    {
+        SchemaTableName tableName = temporaryTable("test_add_column");
+        try {
+            doCreateEmptyTable(tableName, ORC, CREATE_TABLE_COLUMNS);
+            ExtendedHiveMetastore metastoreClient = getMetastoreClient();
+            metastoreClient.addColumn(tableName.getSchemaName(), tableName.getTableName(), "new_col", HIVE_LONG, null);
+            Optional<Table> table = metastoreClient.getTable(tableName.getSchemaName(), tableName.getTableName());
+            assertTrue(table.isPresent());
+            List<Column> columns = table.get().getDataColumns();
+            assertEquals(columns.get(columns.size() - 1).getName(), "new_col");
+        }
+        finally {
+            dropTable(tableName);
+        }
+    }
+
+    @Test
+    public void testDropColumn()
+            throws Exception
+    {
+        SchemaTableName tableName = temporaryTable("test_drop_column");
+        try {
+            doCreateEmptyTable(tableName, ORC, CREATE_TABLE_COLUMNS);
+            ExtendedHiveMetastore metastoreClient = getMetastoreClient();
+            metastoreClient.dropColumn(tableName.getSchemaName(), tableName.getTableName(), CREATE_TABLE_COLUMNS.get(0).getName());
+            Optional<Table> table = metastoreClient.getTable(tableName.getSchemaName(), tableName.getTableName());
+            assertTrue(table.isPresent());
+            List<Column> columns = table.get().getDataColumns();
+            assertEquals(columns.get(0).getName(), CREATE_TABLE_COLUMNS.get(1).getName());
+            assertFalse(columns.stream().map(Column::getName).anyMatch(colName -> colName.equals(CREATE_TABLE_COLUMNS.get(0).getName())));
+        }
+        finally {
+            dropTable(tableName);
         }
     }
 
