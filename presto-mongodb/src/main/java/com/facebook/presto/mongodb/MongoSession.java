@@ -243,6 +243,9 @@ public class MongoSession
     @VisibleForTesting
     static Document buildQuery(TupleDomain<ColumnHandle> tupleDomain)
     {
+        log.debug("buildQuery: tupleDomain=%s", tupleDomain.toString());
+        log.debug("buildQuery: getDomains()=%s", tupleDomain.getDomains().toString());
+
         Document query = new Document();
         if (tupleDomain.getDomains().isPresent()) {
             for (Map.Entry<ColumnHandle, Domain> entry : tupleDomain.getDomains().get().entrySet()) {
@@ -256,6 +259,8 @@ public class MongoSession
 
     private static Document buildPredicate(MongoColumnHandle column, Domain domain)
     {
+        log.debug("buildPredicate: column=%s domain=%s", column.toString(), domain.toString());
+
         String name = column.getName();
         Type type = column.getType();
         if (domain.getValues().isNone() && domain.isNullAllowed()) {
@@ -326,6 +331,8 @@ public class MongoSession
 
     private static Object translateValue(Object source, Type type)
     {
+        log.debug("translateValue: type=%s source=%s", type.toString(), source.toString());
+
         if (source instanceof Slice) {
             if (type instanceof ObjectIdType) {
                 return new ObjectId(((Slice) source).getBytes());
@@ -334,7 +341,7 @@ public class MongoSession
                 return ((Slice) source).toStringUtf8();
             }
         }
-        if (type instanceof TimestampType && source instanceof Long) {
+        if (source instanceof Long && type instanceof TimestampType) {
             return new Date(((Long) source).longValue());
         }
 
